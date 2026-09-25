@@ -1,0 +1,7 @@
+xarray
+netCDF4
+rioxarray
+numpy
+scipy
+s3fs
+geopandas
