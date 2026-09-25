@@ -1,0 +1,8 @@
+name: Actualizar pronostico 72h
+on:
+  workflow_dispatch:
+jobs:
+  placeholder:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Workflow placeholder - pendiente de implementación"
