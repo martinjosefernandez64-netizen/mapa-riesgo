@@ -1,10 +1,19 @@
 {
-  "fecha_emision": null,
-  "corrida_wrf": null,
+  "fecha_emision": "2026-09-25T21:44:10.763003+00:00",
+  "corrida_wrf": "2026-09-25 12 UTC",
   "variable": "Precipitacion acumulada 72 h",
   "unidad": "mm",
-  "bounds": [[-34.5, -63.5], [-27.5, -58.5]],
+  "bounds": [
+    [
+      -34.5,
+      -63.5
+    ],
+    [
+      -27.5,
+      -58.5
+    ]
+  ],
   "zoom_min": 0,
   "zoom_max": 11,
-  "max_mm": 0
+  "max_mm": 1.203193990566083
 }
