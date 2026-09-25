@@ -1,0 +1,10 @@
+{
+  "fecha_emision": null,
+  "corrida_wrf": null,
+  "variable": "Precipitacion acumulada 72 h",
+  "unidad": "mm",
+  "bounds": [[-34.5, -63.5], [-27.5, -58.5]],
+  "zoom_min": 0,
+  "zoom_max": 11,
+  "max_mm": 0
+}
