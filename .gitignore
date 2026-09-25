@@ -1,0 +1,9 @@
+*.nc
+*.tif
+*.tiff
+pronostico_smn_72h.nc
+pronostico_72h.tif
+__pycache__/
+*.pyc
+.DS_Store
+Thumbs.db
