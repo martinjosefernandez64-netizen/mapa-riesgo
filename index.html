@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Mapa de Riesgo</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <style>
+    html, body { margin: 0; padding: 0; height: 100%; font-family: sans-serif; }
+    #map { height: 100vh; width: 100%; }
+    #panel {
+      position: absolute; top: 10px; right: 10px; z-index: 1000;
+      background: white; padding: 12px; border-radius: 8px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.25);
+      max-width: 260px; font-size: 14px;
+    }
+    #panel h4 { margin: 0 0 8px 0; font-size: 15px; }
+    #panel label { display: block; margin: 6px 0; cursor: pointer; }
+  </style>
+</head>
+<body>
+<div id="map"></div>
+<div id="panel">
+  <h4>Capas</h4>
+  <label><input type="checkbox" id="chk-distritos" checked> Distritos</label>
+  <label><input type="checkbox" id="chk-alto"> Zonas de alto riesgo</label>
+  <label><input type="checkbox" id="chk-pronostico"> Pronóstico 72 h</label>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+  const map = L.map('map').setView([-31.5, -60.5], 7);
+
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '© OpenStreetMap'
+  }).addTo(map);
+
+  const capaDistritos = L.geoJSON(null, {
+    style: { color: '#555', weight: 1, fillOpacity: 0.3 }
+  });
+  capaDistritos.addTo(map);
+
+  fetch('datos/distritos.geojson').then(r => r.json()).then(d => {
+    capaDistritos.addData(d);
+    if (capaDistritos.getLayers().length > 0) {
+      map.fitBounds(capaDistritos.getBounds());
+    }
+  });
+</script>
+</body>
+</html>
