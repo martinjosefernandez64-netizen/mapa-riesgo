@@ -1,8 +1,51 @@
-name: Actualizar pronostico 72h
+name: Actualizar pronóstico 72h
+
 on:
+  schedule:
+    # Todos los días a las 14:00 UTC = 11:00 ART
+    - cron: '0 14 * * *'
   workflow_dispatch:
+
+permissions:
+  contents: write
+
 jobs:
-  placeholder:
+  actualizar:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
+
     steps:
-      - run: echo "Workflow placeholder - pendiente de implementación"
+      - name: Clonar repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Instalar GDAL
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gdal-bin python3-gdal
+
+      - name: Instalar dependencias Python
+        run: pip install -r requirements.txt
+
+      - name: Ejecutar script de pronóstico
+        run: python scripts/generar_pronostico.py
+
+      - name: Configurar git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Commit y push
+        run: |
+          git add tiles_pronostico/ datos/pronostico/ 2>/dev/null || true
+          if git diff --staged --quiet; then
+            echo "Sin cambios para commitear"
+          else
+            git commit -m "Actualización pronóstico 72h $(date -u +'%Y-%m-%d %H:%M UTC')"
+            git push
+          fi
