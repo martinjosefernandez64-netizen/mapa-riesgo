@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Mapa de Riesgo</title>
+  <title>Mapa de Riesgo - Santa Fe</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
   <style>
     html, body { margin: 0; padding: 0; height: 100%; font-family: sans-serif; }
@@ -12,40 +12,144 @@
       position: absolute; top: 10px; right: 10px; z-index: 1000;
       background: white; padding: 12px; border-radius: 8px;
       box-shadow: 0 2px 8px rgba(0,0,0,0.25);
-      max-width: 260px; font-size: 14px;
+      max-width: 280px; font-size: 14px;
     }
     #panel h4 { margin: 0 0 8px 0; font-size: 15px; }
     #panel label { display: block; margin: 6px 0; cursor: pointer; }
+    .aviso {
+      margin-top: 8px;
+      padding: 8px 10px;
+      border-radius: 6px;
+      background: #eef6fc;
+      border-left: 4px solid #2171b5;
+      font-size: 12px;
+      line-height: 1.4;
+    }
+    .aviso-alerta {
+      background: #fdecea;
+      border-left-color: #c0392b;
+    }
+    .aviso-titulo {
+      font-weight: bold;
+      margin-bottom: 4px;
+      font-size: 13px;
+    }
+    .aviso-linea {
+      margin: 2px 0;
+    }
+    .aviso-linea strong {
+      color: #333;
+    }
   </style>
 </head>
 <body>
 <div id="map"></div>
+
 <div id="panel">
   <h4>Capas</h4>
-  <label><input type="checkbox" id="chk-distritos" checked> Distritos</label>
-  <label><input type="checkbox" id="chk-alto"> Zonas de alto riesgo</label>
-  <label><input type="checkbox" id="chk-pronostico"> Pronóstico 72 h</label>
+  <label>
+    <input type="checkbox" id="chk-pronostico"> Pronóstico 72 h
+  </label>
+
+  <div id="aviso-pronostico" class="aviso" style="display:none;">
+    <div class="aviso-titulo">Pronóstico en vigor</div>
+    <div class="aviso-linea">
+      <strong>Emitido:</strong> <span id="aviso-emitido">—</span>
+    </div>
+    <div class="aviso-linea">
+      <strong>Válido hasta:</strong> <span id="aviso-vigencia">—</span>
+    </div>
+    <div class="aviso-linea" id="aviso-estado"></div>
+  </div>
+
+  <div id="aviso-vencido" class="aviso aviso-alerta" style="display:none;">
+    <div class="aviso-titulo">Pronóstico no disponible</div>
+    <div class="aviso-linea">
+      La capa de pronóstico no ha podido cargarse o no tiene datos recientes.
+    </div>
+  </div>
 </div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
+  // ---------- Mapa base ----------
   const map = L.map('map').setView([-31.5, -60.5], 7);
 
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     attribution: '© OpenStreetMap'
   }).addTo(map);
 
-  const capaDistritos = L.geoJSON(null, {
-    style: { color: '#555', weight: 1, fillOpacity: 0.3 }
-  });
-  capaDistritos.addTo(map);
+  // ---------- Pronóstico 72 h ----------
+  let capaPronostico = null;
 
-  fetch('datos/distritos.geojson').then(r => r.json()).then(d => {
-    capaDistritos.addData(d);
-    if (capaDistritos.getLayers().length > 0) {
-      map.fitBounds(capaDistritos.getBounds());
-    }
-  });
+  // Umbral: si pasaron más de estas horas desde la emisión, avisar
+  const HORAS_VIGENCIA = 30;
+
+  fetch('datos/pronostico/metadata.json')
+    .then(r => r.json())
+    .then(meta => {
+      if (!meta.fecha_emision) {
+        document.getElementById('aviso-vencido').style.display = 'block';
+        document.getElementById('chk-pronostico').disabled = true;
+        return;
+      }
+
+      const emitido = new Date(meta.fecha_emision);
+      const vigenteHasta = new Date(emitido.getTime() + 72 * 3600 * 1000);
+      const ahora = new Date();
+      const horasDesdeEmision = (ahora - emitido) / 3600 / 1000;
+
+      const formatoAR = {
+        timeZone: 'America/Argentina/Buenos_Aires',
+        day: '2-digit', month: '2-digit', year: 'numeric',
+        hour: '2-digit', minute: '2-digit'
+      };
+
+      const aviso = document.getElementById('aviso-pronostico');
+      document.getElementById('aviso-emitido').textContent =
+        emitido.toLocaleString('es-AR', formatoAR);
+      document.getElementById('aviso-vigencia').textContent =
+        vigenteHasta.toLocaleString('es-AR', formatoAR);
+
+      const estado = document.getElementById('aviso-estado');
+      if (horasDesdeEmision > HORAS_VIGENCIA) {
+        estado.innerHTML =
+          '<span style="color:#c0392b;">Última actualización hace ' +
+          Math.round(horasDesdeEmision) +
+          ' h. El pronóstico puede estar desactualizado.</span>';
+      } else {
+        estado.innerHTML =
+          '<span style="color:#1a7f37;">Actualizado. Máximo previsto: ' +
+          meta.max_mm.toFixed(1) + ' mm en 72 h.</span>';
+      }
+
+      capaPronostico = L.tileLayer(
+        'tiles_pronostico/{z}/{x}/{y}.png',
+        {
+          opacity: 0.75,
+          tms: false,
+          minZoom: meta.zoom_min,
+          maxZoom: meta.zoom_max,
+          attribution: 'WRF-SMN · acumulado 72 h'
+        }
+      );
+
+      document.getElementById('chk-pronostico')
+        .addEventListener('change', e => {
+          if (e.target.checked) {
+            capaPronostico.addTo(map);
+            aviso.style.display = 'block';
+          } else {
+            map.removeLayer(capaPronostico);
+            aviso.style.display = 'none';
+          }
+        });
+    })
+    .catch(err => {
+      console.warn('Pronóstico no disponible:', err);
+      document.getElementById('aviso-vencido').style.display = 'block';
+      document.getElementById('chk-pronostico').disabled = true;
+    });
 </script>
 </body>
 </html>
