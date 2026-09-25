@@ -151,9 +151,27 @@ with tempfile.TemporaryDirectory() as tmp:
     lluvia_5347.rio.to_raster(archivo_tif, nodata=np.nan)
     print(f"GeoTIFF temporal: {archivo_tif}")
 
-    # ---------- 5. Teselas (persistentes) ----------
+    # ---------- 5. Convertir GeoTIFF flotante a 8 bits y generar teselas ----------
     if os.path.exists(DIR_TESELAS):
         subprocess.run(["rm", "-rf", DIR_TESELAS], check=True)
+
+    # Convertir el GeoTIFF flotante a 8 bits con escala 0-255
+    # para que gdal2tiles pueda generar PNG.
+    archivo_vrt = os.path.join(tmp, "pronostico_8bit.vrt")
+
+    # Rango de escala: 0 mm a MAX_MM. Ajusta MAX_MM si querés más detalle
+    # en el rango bajo (por ejemplo, 100 mm) o más rango (por ejemplo, 300 mm).
+    MAX_MM = 150.0
+
+    print(f"Convirtiendo a 8 bits (escala 0-{MAX_MM} mm)...")
+    subprocess.run([
+        "gdal_translate",
+        "-of", "VRT",
+        "-ot", "Byte",
+        "-scale", "0", str(MAX_MM), "0", "255",
+        archivo_tif,
+        archivo_vrt,
+    ], check=True)
 
     print(f"Generando teselas zoom {ZOOM_MIN}-{ZOOM_MAX}...")
     subprocess.run([
@@ -162,10 +180,10 @@ with tempfile.TemporaryDirectory() as tmp:
         "-w", "none",
         "-p", "mercator",
         "--processes", "4",
-        archivo_tif,
+        archivo_vrt,
         DIR_TESELAS,
     ], check=True)
-
+    
     # ---------- 6. Metadata (persistente) ----------
     os.makedirs(DIR_METADATA, exist_ok=True)
     metadata = {
