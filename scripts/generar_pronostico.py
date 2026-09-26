@@ -6,17 +6,14 @@ Salida:
 - Teselas XYZ (PNG con transparencia) recortadas al polígono de Santa Fe.
 - Metadata con la escala del SMN orientada al sector agropecuario.
 
-Cambios respecto a la versión anterior:
-- El bbox de trabajo se calcula desde el polígono de Santa Fe, NO desde
-  coordenadas hardcodeadas. Todo el pipeline (recorte de la grilla WRF,
-  interpolación, extensión del GeoTIFF, bounds del metadata.json) usa
-  ese mismo bbox, con un margen de 0.1° para evitar teselas de borde
-  cortadas.
-- El metadata.json declara los bounds REALES del ráster recortado
-  (rio.bounds()), que coinciden exactamente con las teselas generadas.
-  Esto elimina los 404 en Leaflet.
+Cambios importantes:
+- La variable PP es precipitación acumulada cada 10 minutos.
+  Cada archivo del SMN contiene 6 timesteps de 10 min = 1 hora completa.
+  Para obtener la precipitación de cada hora se SUMAN las 6 bandas del
+  archivo, no se toma una sola.
+- El bbox de trabajo se calcula desde el polígono de Santa Fe.
+- El metadata.json declara los bounds REALES del ráster recortado.
 - NoData transparente (-9999) con la entrada al principio de la tabla.
-- Validación de unidades de PP corregida (acepta 'millimeter').
 - Sin SystemExit(0) silencioso: los errores salen con código 1.
 """
 
@@ -56,9 +53,7 @@ DIR_TESELAS = "tiles_pronostico"
 DIR_METADATA = "datos/pronostico"
 RUTA_POLIGONO = "datos/santa_fe.geojson"
 
-# Margen (en grados) alrededor del bbox del polígono. Sirve para que
-# las teselas del borde se generen completas y el recorte no quede
-# cortado a mitad de tesela.
+# Margen (en grados) alrededor del bbox del polígono.
 MARGEN_BBOX = 0.1
 
 ZOOM_MIN, ZOOM_MAX = 0, 11
@@ -69,8 +64,7 @@ HORAS = list(range(1, 73))
 
 NODATA_VALOR = -9999
 
-# Resolución de la grilla destino (se ajusta más abajo según el tamaño
-# del bbox: cuantos más grados cubre, más píxeles necesita).
+# Resolución de la grilla destino (píxeles por grado).
 N_PIXELES_POR_GRADO = 60
 
 # ------------------------------------------------------------
@@ -113,7 +107,14 @@ def descargar_archivo(fs, ruta_s3, ruta_local, max_intentos=3):
 
 
 def procesar_archivo_pp(ruta_nc, validar_unidades=False):
-    """Lee PP de un NetCDF del SMN."""
+    """
+    Lee la variable PP de un NetCDF del SMN y devuelve la precipitación
+    horaria del archivo.
+
+    IMPORTANTE: PP es precipitación acumulada cada 10 minutos. Cada
+    archivo contiene 6 timesteps de 10 min (una hora completa). Para
+    obtener la precipitación de esa hora, se SUMAN las 6 bandas.
+    """
     ds = xr.open_dataset(ruta_nc, engine="netcdf4")
 
     if "PP" in ds.data_vars:
@@ -135,10 +136,15 @@ def procesar_archivo_pp(ruta_nc, validar_unidades=False):
             log.warning("  Unidades de PP inesperadas: %r", unidades)
 
     valores = pp.values
-    if valores.ndim == 3:
-        valores = valores[0]
-    valores = valores.astype(np.float32)
 
+    if valores.ndim == 3:
+        # Sumar los 6 timesteps de 10 min para obtener la hora completa.
+        valores = np.nansum(valores, axis=0)
+    elif valores.ndim == 2:
+        # Archivo con una sola capa (ej. pp_072.nc con 1 banda).
+        valores = np.nan_to_num(valores, nan=0.0)
+
+    valores = valores.astype(np.float32)
     ds.close()
     return valores
 
@@ -260,10 +266,15 @@ def main():
         if "PP" in ds_ref.data_vars:
             log.info("  PP attrs: %s", dict(ds_ref["PP"].attrs))
             muestra = ds_ref["PP"]
+            log.info("  PP shape original: %s", muestra.shape)
             if muestra.ndim == 3:
-                muestra = muestra.isel(time=0)
-            log.info("  PP rango primera capa: %.4f a %.4f",
-                     float(muestra.min()), float(muestra.max()))
+                log.info("  PP timesteps por archivo: %d", muestra.shape[0])
+                log.info("  PP rango banda 1: %.4f a %.4f",
+                         float(muestra.isel(time=0).min()),
+                         float(muestra.isel(time=0).max()))
+                suma_hora = np.nansum(muestra.values, axis=0)
+                log.info("  PP suma de 6 bandas (1 hora): max=%.4f",
+                         float(np.nanmax(suma_hora)))
 
         lat2d = ds_ref["lat"].values
         lon2d = ds_ref["lon"].values
@@ -299,6 +310,7 @@ def main():
         for hora in sorted(archivos_locales.keys()):
             ruta_local = archivos_locales[hora]
             try:
+                # Suma las 6 bandas de 10 min para obtener la hora completa.
                 capa = procesar_archivo_pp(ruta_local)
                 if capa.shape != acumulado.shape:
                     log.warning("  Hora %d: forma inesperada %s, se ignora",
@@ -326,7 +338,6 @@ def main():
         log.info("INTERPOLANDO A CUADRÍCULA REGULAR")
         log.info("=" * 60)
 
-        # Resolución proporcional al tamaño del bbox
         N_LON = max(100, int((LON_MAX - LON_MIN) * N_PIXELES_POR_GRADO))
         N_LAT = max(100, int((LAT_MAX - LAT_MIN) * N_PIXELES_POR_GRADO))
         lon_reg = np.linspace(LON_MIN, LON_MAX, N_LON)
@@ -425,7 +436,6 @@ def main():
 
         archivo_color = os.path.join(tmp, "pronostico_color.tif")
 
-        # IMPORTANTE: la entrada NoData va PRIMERO.
         lineas_color = [f"{NODATA_VALOR} 0 0 0 0"]
         for vmin, vmax, hex_color in ESCALA:
             r, g, b = hex_a_rgb(hex_color)
@@ -465,6 +475,7 @@ def main():
             archivo_color,
             DIR_TESELAS,
         ], check=True)
+
         log.info("  Teselas generadas en %s/", DIR_TESELAS)
 
         # ------------------------------------------------
@@ -472,9 +483,7 @@ def main():
         # ------------------------------------------------
         os.makedirs(DIR_METADATA, exist_ok=True)
 
-        # Bounds reales del ráster recortado (en WGS84).
-        # Coinciden exactamente con el GeoTIFF que generó gdal2tiles.
-        b = lluvia_regular.rio.bounds()  # (lon_min, lat_min, lon_max, lat_max)
+        b = lluvia_regular.rio.bounds()
         bounds_reales = [[b[1], b[0]], [b[3], b[2]]]
 
         log.info("  Bounds reales del ráster: lon [%.4f, %.4f], lat [%.4f, %.4f]",
