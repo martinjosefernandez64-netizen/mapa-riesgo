@@ -3,8 +3,8 @@
       <Title>pronostico_color.tif</Title>
       <Abstract></Abstract>
       <SRS>EPSG:3857</SRS>
-      <BoundingBox minx="-62.88172043010751" miny="-34.38717929205005" maxx="-58.88168756843136" maxy="-28.00589970501473"/>
-      <Origin x="-62.88172043010751" y="-34.38717929205005"/>
+      <BoundingBox minx="-62.89964157706091" miny="-34.40277279793588" maxx="-58.85632799635233" maxy="-27.98525073746312"/>
+      <Origin x="-62.89964157706091" y="-34.40277279793588"/>
       <TileFormat width="256" height="256" mime-type="image/png" extension="png"/>
       <TileSets profile="mercator">
         <TileSet href="0" units-per-pixel="156543.03390000000945" order="0"/>
