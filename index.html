@@ -40,7 +40,6 @@
     .aviso-linea strong {
       color: #333;
     }
-    /* Leyenda */
     .leyenda {
       background: white;
       padding: 10px 12px;
@@ -106,6 +105,12 @@
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
+  // PNG de 1x1 transparente para reemplazar teselas faltantes.
+  // Red de seguridad: con bounds ajustados al polígono no debería
+  // haber 404, pero si algún día aparecen, se ven transparentes.
+  const PNG_TRANSPARENTE =
+    'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+
   // ---------- Mapa base ----------
   const map = L.map('map').setView([-31.5, -60.5], 7);
 
@@ -118,13 +123,9 @@
 
   function construirLeyenda(meta) {
     const leyenda = L.control({ position: 'bottomright' });
-
     leyenda.onAdd = function () {
       const div = L.DomUtil.create('div', 'leyenda');
       let html = '<div class="leyenda-titulo">Precipitación 72 h (mm)</div>';
-
-      // La escala viene de menor a mayor; invertimos para mostrar
-      // los valores altos arriba (convención cartográfica).
       const items = meta.escala.slice().reverse();
       items.forEach(function (item) {
         html += '<div class="leyenda-item">' +
@@ -132,16 +133,13 @@
                 '<span>' + item.label + '</span>' +
                 '</div>';
       });
-
       html += '<div class="leyenda-pie">' +
               'Corrida: ' + meta.corrida_wrf + '<br>' +
               'Máx: ' + meta.max_mm.toFixed(1) + ' mm' +
               '</div>';
-
       div.innerHTML = html;
       return div;
     };
-
     return leyenda;
   }
 
@@ -187,9 +185,7 @@
           meta.max_mm.toFixed(1) + ' mm en 72 h.</span>';
       }
 
-      // Capa de pronóstico.
-      // maxNativeZoom limita las teselas reales al zoom máximo generado.
-      // maxZoom permite seguir haciendo zoom (Leaflet escala las teselas).
+      // Capa de pronóstico con errorTileUrl de seguridad.
       capaPronostico = L.tileLayer(
         'tiles_pronostico/{z}/{x}/{y}.png',
         {
@@ -198,11 +194,11 @@
           minZoom: 0,
           maxNativeZoom: meta.zoom_max,
           maxZoom: 18,
+          errorTileUrl: PNG_TRANSPARENTE,
           attribution: 'WRF-SMN · acumulado 72 h'
         }
       );
 
-      // Leyenda
       controlLeyenda = construirLeyenda(meta);
 
       document.getElementById('chk-pronostico')
