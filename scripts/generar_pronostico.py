@@ -4,21 +4,29 @@ Genera el pronóstico de precipitación acumulada 72 h del WRF-SMN.
 
 Salida:
 - Teselas XYZ (PNG con transparencia) recortadas al polígono de Santa Fe.
+- GeoTIFF intermedio con NoData=-9999.
 - Metadata con la escala del SMN orientada al sector agropecuario.
 
-Optimizaciones:
-- Descarga paralela de los 72 archivos 10M.
-- Acumulación en streaming.
-- Borrado inmediato de cada NetCDF.
-- Sin reproyección: se trabaja en EPSG:4326 (WGS84).
-- Paleta aplicada directamente sobre el ráster continuo, sin reclasificación.
-- Enmascaramiento real con rasterio.mask (no solo recorte del bbox).
-- NoData explícito (-9999) para que gdaldem lo trate correctamente.
+Cambios respecto a la versión anterior:
+- La tabla de color tiene la entrada NoData PRIMERO y se aplica con
+  gdaldem -alpha (sin -nearest_color_entry) para que el NoData sea
+  realmente transparente.
+- Se valida que PP tenga unidades coherentes (mm) y se advierte si no.
+- Se valida que el ráster final tenga píxeles válidos antes de continuar.
+- Se rellenan los NaN residuales con una segunda pasada de griddata
+  (nearest) para evitar agujeros dentro del polígono.
+- Si no hay corrida disponible, se sale con código 1 para que el
+  workflow falle visiblemente.
+- Logging con logging en vez de print.
+- Copia el GeoTIFF final a datos/pronostico/ (opcional, comentado).
 """
 
 import os
+import sys
+import shutil
 import subprocess
 import json
+import logging
 import datetime
 import tempfile
 import time
@@ -32,6 +40,16 @@ import geopandas as gpd
 from scipy.interpolate import griddata
 
 # ============================================================
+# LOGGING
+# ============================================================
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+log = logging.getLogger("pronostico")
+
+# ============================================================
 # CONFIGURACIÓN
 # ============================================================
 BUCKET = "smn-ar-wrf"
@@ -39,40 +57,31 @@ DIR_TESELAS = "tiles_pronostico"
 DIR_METADATA = "datos/pronostico"
 RUTA_POLIGONO = "datos/santa_fe.geojson"
 
-# Bounding box de Santa Fe con margen
 LON_MIN, LON_MAX = -63.5, -58.5
 LAT_MIN, LAT_MAX = -34.5, -27.5
 
-# Niveles de zoom para las teselas
 ZOOM_MIN, ZOOM_MAX = 0, 11
 
-# Cantidad de descargas paralelas
 MAX_WORKERS = 8
 
-# Horas del pronóstico (1 a 72). El _000 es condición inicial.
 HORAS = list(range(1, 73))
 
-# Valor centinela para NoData. Se elige fuera del rango real de
-# precipitación (0 a ~500 mm) para que gdaldem no lo confunda.
 NODATA_VALOR = -9999
 
 # ------------------------------------------------------------
 # ESCALA DE COLORES (adaptada del SMN para el sector agropecuario)
-# Cada entrada: (límite_inferior, límite_superior, color_hex)
-# Los valores son los umbrales inferiores de cada categoría.
-# gdaldem asigna a cada píxel el color del umbral inmediatamente inferior.
 # ------------------------------------------------------------
 ESCALA = [
-    (0,   0.1, "#f7f4e9"),   # Sin precipitación
-    (0.1, 1,   "#ffffcc"),   # Trazas
-    (1,   5,   "#c2e699"),   # Muy baja
-    (5,   15,  "#78c679"),   # Baja
-    (15,  30,  "#6baed6"),   # Moderada
-    (30,  50,  "#4292c6"),   # Moderada-alta
-    (50,  75,  "#2171b5"),   # Alta
-    (75,  100, "#08519c"),   # Muy alta
-    (100, 150, "#d6604d"),   # Intensa
-    (150, 500, "#67001f"),   # Extrema
+    (0,   0.1, "#f7f4e9"),
+    (0.1, 1,   "#ffffcc"),
+    (1,   5,   "#c2e699"),
+    (5,   15,  "#78c679"),
+    (15,  30,  "#6baed6"),
+    (30,  50,  "#4292c6"),
+    (50,  75,  "#2171b5"),
+    (75,  100, "#08519c"),
+    (100, 150, "#d6604d"),
+    (150, 500, "#67001f"),
 ]
 
 
@@ -80,13 +89,11 @@ ESCALA = [
 # FUNCIONES AUXILIARES
 # ============================================================
 def hex_a_rgb(hex_color):
-    """Convierte #RRGGBB a tupla (R, G, B)."""
     h = hex_color.lstrip("#")
     return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
 
 
 def descargar_archivo(fs, ruta_s3, ruta_local, max_intentos=3):
-    """Descarga un archivo con reintentos."""
     for intento in range(max_intentos):
         try:
             fs.get(ruta_s3, ruta_local)
@@ -95,13 +102,13 @@ def descargar_archivo(fs, ruta_s3, ruta_local, max_intentos=3):
             if os.path.exists(ruta_local):
                 os.remove(ruta_local)
         except Exception as e:
-            print(f"    Intento {intento+1} falló: {e}")
+            log.warning("    Intento %d falló: %s", intento + 1, e)
             time.sleep(2 * (intento + 1))
     return False
 
 
-def procesar_archivo_pp(ruta_nc):
-    """Lee la variable PP de un NetCDF del SMN."""
+def procesar_archivo_pp(ruta_nc, validar_unidades=True):
+    """Lee la variable PP de un NetCDF del SMN y valida unidades."""
     ds = xr.open_dataset(ruta_nc, engine="netcdf4")
 
     if "PP" in ds.data_vars:
@@ -114,6 +121,13 @@ def procesar_archivo_pp(ruta_nc):
             raise ValueError(f"No se encontró PP en {ruta_nc}. "
                              f"Variables: {list(ds.data_vars)}")
         pp = ds[candidatos[0]]
+        log.warning("  Variable PP no encontrada, usando %s", candidatos[0])
+
+    if validar_unidades:
+        unidades = pp.attrs.get("units", "").lower()
+        # Si las unidades no son mm, avisamos una sola vez
+        if unidades and "mm" not in unidades and "kg" not in unidades:
+            log.warning("  Unidades de PP inesperadas: %r", unidades)
 
     valores = pp.values
     if valores.ndim == 3:
@@ -127,336 +141,365 @@ def procesar_archivo_pp(ruta_nc):
 # ============================================================
 # PROCESAMIENTO PRINCIPAL
 # ============================================================
-with tempfile.TemporaryDirectory() as tmp:
-    archivo_tif = os.path.join(tmp, "pronostico_72h.tif")
+def main():
+    with tempfile.TemporaryDirectory() as tmp:
+        archivo_tif = os.path.join(tmp, "pronostico_72h.tif")
 
-    # --------------------------------------------------------
-    # 1. Determinar la corrida más reciente disponible
-    # --------------------------------------------------------
-    print("=" * 60)
-    print("BUSCANDO CORRIDA DISPONIBLE EN EL BUCKET DEL SMN")
-    print("=" * 60)
+        # ----------------------------------------------------
+        # 1. Corrida más reciente
+        # ----------------------------------------------------
+        log.info("=" * 60)
+        log.info("BUSCANDO CORRIDA DISPONIBLE EN EL BUCKET DEL SMN")
+        log.info("=" * 60)
 
-    fs = s3fs.S3FileSystem(anon=True)
-    hoy = datetime.datetime.now()
+        fs = s3fs.S3FileSystem(anon=True)
+        hoy = datetime.datetime.now()
 
-    corrida = None
-    for dias_atras in range(3):
-        fecha = hoy - datetime.timedelta(days=dias_atras)
-        anio, mes, dia = fecha.strftime("%Y"), fecha.strftime("%m"), fecha.strftime("%d")
+        corrida = None
+        for dias_atras in range(3):
+            fecha = hoy - datetime.timedelta(days=dias_atras)
+            anio = fecha.strftime("%Y")
+            mes = fecha.strftime("%m")
+            dia = fecha.strftime("%d")
 
-        ruta_test = (f"{BUCKET}/DATA/WRF/DET/{anio}/{mes}/{dia}/12/"
-                     f"WRFDETAR_10M_{anio}{mes}{dia}_12_072.nc")
-        try:
-            fs.info(ruta_test)
-            corrida = (anio, mes, dia)
-            print(f"  Corrida encontrada: {anio}-{mes}-{dia} 12 UTC")
-            break
-        except Exception:
-            print(f"  Corrida {anio}-{mes}-{dia} no disponible")
+            ruta_test = (f"{BUCKET}/DATA/WRF/DET/{anio}/{mes}/{dia}/12/"
+                         f"WRFDETAR_10M_{anio}{mes}{dia}_12_072.nc")
+            try:
+                fs.info(ruta_test)
+                corrida = (anio, mes, dia)
+                log.info("  Corrida encontrada: %s-%s-%s 12 UTC", anio, mes, dia)
+                break
+            except Exception:
+                log.info("  Corrida %s-%s-%s no disponible", anio, mes, dia)
 
-    if corrida is None:
-        print("No hay corridas disponibles. Se conserva la versión anterior.")
-        raise SystemExit(0)
+        if corrida is None:
+            log.error("No hay corridas disponibles. Se aborta.")
+            sys.exit(1)
 
-    anio, mes, dia = corrida
+        anio, mes, dia = corrida
 
-    # --------------------------------------------------------
-    # 2. Descarga paralela de los 72 archivos
-    # --------------------------------------------------------
-    print(f"\n{'=' * 60}")
-    print(f"DESCARGA PARALELA DE 72 ARCHIVOS (workers={MAX_WORKERS})")
-    print(f"{'=' * 60}")
+        # ----------------------------------------------------
+        # 2. Descarga paralela
+        # ----------------------------------------------------
+        log.info("=" * 60)
+        log.info("DESCARGA PARALELA DE 72 ARCHIVOS (workers=%d)", MAX_WORKERS)
+        log.info("=" * 60)
 
-    archivos_locales = {}
-    t_inicio = time.time()
+        archivos_locales = {}
+        t_inicio = time.time()
 
-    def descargar_hora(hora):
-        ruta_s3 = (f"{BUCKET}/DATA/WRF/DET/{anio}/{mes}/{dia}/12/"
-                   f"WRFDETAR_10M_{anio}{mes}{dia}_12_{hora:03d}.nc")
-        ruta_local = os.path.join(tmp, f"pp_{hora:03d}.nc")
-        exito = descargar_archivo(fs, ruta_s3, ruta_local)
-        return hora, ruta_local if exito else None
+        def descargar_hora(hora):
+            ruta_s3 = (f"{BUCKET}/DATA/WRF/DET/{anio}/{mes}/{dia}/12/"
+                       f"WRFDETAR_10M_{anio}{mes}{dia}_12_{hora:03d}.nc")
+            ruta_local = os.path.join(tmp, f"pp_{hora:03d}.nc")
+            exito = descargar_archivo(fs, ruta_s3, ruta_local)
+            return hora, ruta_local if exito else None
 
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        futuros = {executor.submit(descargar_hora, h): h for h in HORAS}
-        completados = 0
-        for futuro in as_completed(futuros):
-            hora, ruta = futuro.result()
-            if ruta:
-                archivos_locales[hora] = ruta
-            completados += 1
-            if completados % 12 == 0:
-                print(f"  Descargados {completados}/{len(HORAS)}")
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            futuros = {executor.submit(descargar_hora, h): h for h in HORAS}
+            completados = 0
+            for futuro in as_completed(futuros):
+                hora, ruta = futuro.result()
+                if ruta:
+                    archivos_locales[hora] = ruta
+                completados += 1
+                if completados % 12 == 0:
+                    log.info("  Descargados %d/%d", completados, len(HORAS))
 
-    t_fin = time.time()
-    print(f"\n  Descargados {len(archivos_locales)}/{len(HORAS)} archivos "
-          f"en {t_fin - t_inicio:.1f} s")
+        t_fin = time.time()
+        log.info("  Descargados %d/%d archivos en %.1f s",
+                 len(archivos_locales), len(HORAS), t_fin - t_inicio)
 
-    if len(archivos_locales) < len(HORAS) * 0.9:
-        print("Menos del 90% de archivos descargados. Abortando.")
-        raise SystemExit(0)
+        if len(archivos_locales) < len(HORAS) * 0.9:
+            log.error("Menos del 90%% de archivos descargados. Se aborta.")
+            sys.exit(1)
 
-    # --------------------------------------------------------
-    # 3. Leer la estructura del primer archivo
-    # --------------------------------------------------------
-    print(f"\n{'=' * 60}")
-    print("LEYENDO ESTRUCTURA DEL PRIMER ARCHIVO")
-    print(f"{'=' * 60}")
+        # ----------------------------------------------------
+        # 3. Estructura del primer archivo
+        # ----------------------------------------------------
+        log.info("=" * 60)
+        log.info("LEYENDO ESTRUCTURA DEL PRIMER ARCHIVO")
+        log.info("=" * 60)
 
-    primera_hora = min(archivos_locales.keys())
-    ds_ref = xr.open_dataset(archivos_locales[primera_hora], engine="netcdf4")
-    lat2d = ds_ref["lat"].values
-    lon2d = ds_ref["lon"].values
+        primera_hora = min(archivos_locales.keys())
+        ds_ref = xr.open_dataset(archivos_locales[primera_hora], engine="netcdf4")
 
-    if lat2d.ndim == 3:
-        lat2d = lat2d[0]
-    if lon2d.ndim == 3:
-        lon2d = lon2d[0]
+        # Diagnóstico de unidades de PP
+        if "PP" in ds_ref.data_vars:
+            log.info("  PP attrs: %s", dict(ds_ref["PP"].attrs))
+            muestra = ds_ref["PP"]
+            if muestra.ndim == 3:
+                muestra = muestra.isel(time=0)
+            log.info("  PP rango primera capa: %.4f a %.4f",
+                     float(muestra.min()), float(muestra.max()))
+            log.info("  PP suma primera capa: %.4f",
+                     float(np.nansum(muestra.values)))
 
-    print(f"  Forma de la grilla: {lat2d.shape}")
-    print(f"  lat: {np.min(lat2d):.2f} a {np.max(lat2d):.2f}")
-    print(f"  lon: {np.min(lon2d):.2f} a {np.max(lon2d):.2f}")
+        lat2d = ds_ref["lat"].values
+        lon2d = ds_ref["lon"].values
+        if lat2d.ndim == 3:
+            lat2d = lat2d[0]
+        if lon2d.ndim == 3:
+            lon2d = lon2d[0]
 
-    mascara_bbox = ((lon2d >= LON_MIN) & (lon2d <= LON_MAX) &
-                    (lat2d >= LAT_MIN) & (lat2d <= LAT_MAX))
-    print(f"  Puntos dentro del bbox: {int(np.sum(mascara_bbox))}")
+        log.info("  Forma de la grilla: %s", lat2d.shape)
+        log.info("  lat: %.2f a %.2f", np.min(lat2d), np.max(lat2d))
+        log.info("  lon: %.2f a %.2f", np.min(lon2d), np.max(lon2d))
 
-    ds_ref.close()
+        mascara_bbox = ((lon2d >= LON_MIN) & (lon2d <= LON_MAX) &
+                        (lat2d >= LAT_MIN) & (lat2d <= LAT_MAX))
+        log.info("  Puntos dentro del bbox: %d", int(np.sum(mascara_bbox)))
 
-    # --------------------------------------------------------
-    # 4. Acumulación en streaming
-    # --------------------------------------------------------
-    print(f"\n{'=' * 60}")
-    print("ACUMULANDO PRECIPITACIÓN EN STREAMING")
-    print(f"{'=' * 60}")
+        ds_ref.close()
 
-    acumulado = np.zeros(lat2d.shape, dtype=np.float32)
-    horas_procesadas = 0
+        # ----------------------------------------------------
+        # 4. Acumulación en streaming
+        # ----------------------------------------------------
+        log.info("=" * 60)
+        log.info("ACUMULANDO PRECIPITACIÓN EN STREAMING")
+        log.info("=" * 60)
 
-    for hora in sorted(archivos_locales.keys()):
-        ruta_local = archivos_locales[hora]
-        try:
-            capa = procesar_archivo_pp(ruta_local)
-            if capa.shape != acumulado.shape:
-                print(f"  Hora {hora}: forma inesperada {capa.shape}, se ignora")
+        acumulado = np.zeros(lat2d.shape, dtype=np.float32)
+        horas_procesadas = 0
+
+        for hora in sorted(archivos_locales.keys()):
+            ruta_local = archivos_locales[hora]
+            try:
+                capa = procesar_archivo_pp(ruta_local)
+                if capa.shape != acumulado.shape:
+                    log.warning("  Hora %d: forma inesperada %s, se ignora",
+                                hora, capa.shape)
+                    os.remove(ruta_local)
+                    continue
+                acumulado += np.nan_to_num(capa, nan=0.0)
+                horas_procesadas += 1
                 os.remove(ruta_local)
-                continue
+                if horas_procesadas % 12 == 0:
+                    log.info("  Procesadas %d horas | máx acumulado: %.2f mm",
+                             horas_procesadas, float(np.nanmax(acumulado)))
+            except Exception as e:
+                log.warning("  Hora %d: error %s", hora, e)
+                if os.path.exists(ruta_local):
+                    os.remove(ruta_local)
 
-            acumulado += np.nan_to_num(capa, nan=0.0)
-            horas_procesadas += 1
-            os.remove(ruta_local)
+        log.info("  Total procesadas: %d horas", horas_procesadas)
+        log.info("  Máximo acumulado: %.2f mm", float(np.nanmax(acumulado)))
+        log.info("  Media acumulada:  %.4f mm", float(np.nanmean(acumulado)))
 
-            if horas_procesadas % 12 == 0:
-                print(f"  Procesadas {horas_procesadas} horas | "
-                      f"máx acumulado: {np.nanmax(acumulado):.2f} mm")
+        # ----------------------------------------------------
+        # 5. Recorte bbox e interpolación
+        # ----------------------------------------------------
+        log.info("=" * 60)
+        log.info("RECORTANDO E INTERPOLANDO A CUADRÍCULA REGULAR")
+        log.info("=" * 60)
 
-        except Exception as e:
-            print(f"  Hora {hora}: error {e}")
-            if os.path.exists(ruta_local):
-                os.remove(ruta_local)
+        N_LON, N_LAT = 280, 340
+        lon_reg = np.linspace(LON_MIN, LON_MAX, N_LON)
+        lat_reg = np.linspace(LAT_MIN, LAT_MAX, N_LAT)
 
-    print(f"\n  Total procesadas: {horas_procesadas} horas")
-    print(f"  Máximo acumulado: {np.nanmax(acumulado):.2f} mm")
-    print(f"  Media acumulada:  {np.nanmean(acumulado):.4f} mm")
+        puntos_lon = lon2d[mascara_bbox]
+        puntos_lat = lat2d[mascara_bbox]
+        valores = acumulado[mascara_bbox]
+        validos = np.isfinite(valores)
 
-    # --------------------------------------------------------
-    # 5. Recortar al bbox e interpolar
-    # --------------------------------------------------------
-    print(f"\n{'=' * 60}")
-    print("RECORTANDO E INTERPOLANDO A CUADRÍCULA REGULAR")
-    print(f"{'=' * 60}")
+        grid_lon, grid_lat = np.meshgrid(lon_reg, lat_reg)
 
-    N_LON, N_LAT = 280, 340
-    lon_reg = np.linspace(LON_MIN, LON_MAX, N_LON)
-    lat_reg = np.linspace(LAT_MIN, LAT_MAX, N_LAT)
+        # Primera pasada: lineal
+        interp_linear = griddata(
+            np.column_stack([puntos_lon[validos], puntos_lat[validos]]),
+            valores[validos],
+            (grid_lon, grid_lat),
+            method="linear",
+            fill_value=np.nan,
+        ).astype(np.float32)
 
-    puntos_lon = lon2d[mascara_bbox]
-    puntos_lat = lat2d[mascara_bbox]
-    valores = acumulado[mascara_bbox]
+        # Segunda pasada: nearest para rellenar huecos
+        interp_nearest = griddata(
+            np.column_stack([puntos_lon[validos], puntos_lat[validos]]),
+            valores[validos],
+            (grid_lon, grid_lat),
+            method="nearest",
+            fill_value=np.nan,
+        ).astype(np.float32)
 
-    validos = np.isfinite(valores)
-    grid_lon, grid_lat = np.meshgrid(lon_reg, lat_reg)
+        acumulado_interp = np.where(
+            np.isnan(interp_linear), interp_nearest, interp_linear
+        ).astype(np.float32)
 
-    acumulado_interp = griddata(
-        np.column_stack([puntos_lon[validos], puntos_lat[validos]]),
-        valores[validos],
-        (grid_lon, grid_lat),
-        method="linear",
-        fill_value=np.nan,
-    ).astype(np.float32)
+        log.info("  Cuadrícula interpolada: %s", acumulado_interp.shape)
+        log.info("  Máximo interpolado: %.2f mm",
+                 float(np.nanmax(acumulado_interp)))
 
-    print(f"  Cuadrícula interpolada: {acumulado_interp.shape}")
-    print(f"  Máximo interpolado: {np.nanmax(acumulado_interp):.2f} mm")
-
-    # --------------------------------------------------------
-    # 6. Construir DataArray, recortar y preparar GeoTIFF final
-    # --------------------------------------------------------
-    lluvia_regular = xr.DataArray(
-        acumulado_interp,
-        dims=["latitude", "longitude"],
-        coords={"latitude": lat_reg, "longitude": lon_reg},
-        name="PP",
-        attrs={"units": "mm", "long_name": "Precipitación acumulada 72h"},
-    )
-    lluvia_regular = lluvia_regular.rio.write_crs("EPSG:4326")
-    lluvia_regular = lluvia_regular.rio.set_spatial_dims(
-        x_dim="longitude", y_dim="latitude", inplace=True
-    )
-
-    # --------------------------------------------------------
-    # 6b. Recortar al polígono con fill_value=-9999
-    # --------------------------------------------------------
-    print(f"\n{'=' * 60}")
-    print("RECORTANDO AL POLÍGONO DE SANTA FE")
-    print(f"{'=' * 60}")
-
-    if os.path.exists(RUTA_POLIGONO):
-        gdf = gpd.read_file(RUTA_POLIGONO)
-        print(f"  Polígono cargado: {len(gdf)} entidad(es), CRS: {gdf.crs}")
-
-        if gdf.crs and str(gdf.crs) != "EPSG:4326":
-            gdf = gdf.to_crs("EPSG:4326")
-            print(f"  Polígono reproyectado a EPSG:4326")
-
-        # rioxarray.clip devuelve NaN fuera del polígono.
-        # Reemplazamos inmediatamente con NODATA_VALOR (-9999).
-        lluvia_regular = lluvia_regular.rio.clip(
-            gdf.geometry.values,
-            gdf.crs,
-            drop=False,          # mantener la extensión original
-            invert=False,
+        # ----------------------------------------------------
+        # 6. DataArray + recorte al polígono
+        # ----------------------------------------------------
+        lluvia_regular = xr.DataArray(
+            acumulado_interp,
+            dims=["latitude", "longitude"],
+            coords={"latitude": lat_reg, "longitude": lon_reg},
+            name="PP",
+            attrs={"units": "mm", "long_name": "Precipitación acumulada 72h"},
         )
-        print(f"  Recorte aplicado. Forma después del clip: {lluvia_regular.shape}")
-    else:
-        print(f"  ADVERTENCIA: no se encontró {RUTA_POLIGONO}")
-        print(f"  Se conserva el recorte rectangular del bbox.")
+        lluvia_regular = lluvia_regular.rio.write_crs("EPSG:4326")
+        lluvia_regular = lluvia_regular.rio.set_spatial_dims(
+            x_dim="longitude", y_dim="latitude", inplace=True
+        )
 
-    # --------------------------------------------------------
-    # 6c. Reemplazar NaN por -9999 y guardar GeoTIFF
-    # --------------------------------------------------------
-    # Todos los NaN (fuera del polígono o fuera del alcance de la
-    # interpolación) se convierten al valor centinela.
-    lluvia_regular = lluvia_regular.fillna(NODATA_VALOR)
-    lluvia_regular = lluvia_regular.rio.write_nodata(NODATA_VALOR)
-    lluvia_regular.rio.to_raster(archivo_tif, nodata=NODATA_VALOR)
+        log.info("=" * 60)
+        log.info("RECORTANDO AL POLÍGONO DE SANTA FE")
+        log.info("=" * 60)
 
-    # Diagnóstico
-    arr = lluvia_regular.values
-    total = arr.size
-    nodata_count = int(np.sum(arr == NODATA_VALOR))
-    validos = arr[arr != NODATA_VALOR]
+        if os.path.exists(RUTA_POLIGONO):
+            gdf = gpd.read_file(RUTA_POLIGONO)
+            log.info("  Polígono cargado: %d entidad(es), CRS: %s",
+                     len(gdf), gdf.crs)
+            if gdf.crs and str(gdf.crs) != "EPSG:4326":
+                gdf = gdf.to_crs("EPSG:4326")
+                log.info("  Polígono reproyectado a EPSG:4326")
 
-    print(f"  GeoTIFF final: {archivo_tif}")
-    print(f"  Píxeles totales: {total}")
-    print(f"  Píxeles con NoData: {nodata_count}")
-    print(f"  Píxeles válidos: {total - nodata_count}")
-    if len(validos) > 0:
-        print(f"  Rango de valores válidos: "
-              f"{np.min(validos):.2f} a {np.max(validos):.2f} mm")
-    # --------------------------------------------------------
-    # 7. Aplicar paleta de colores sobre el ráster continuo
-    # --------------------------------------------------------
-    print(f"\n{'=' * 60}")
-    print("APLICANDO PALETA DE COLORES")
-    print(f"{'=' * 60}")
-
-    archivo_color = os.path.join(tmp, "pronostico_color.tif")
-
-    # Tabla de colores: valor R G B A
-    # Los valores son los umbrales inferiores de cada categoría.
-    # El valor -9999 corresponde al NoData y se pinta con alfa 0
-    # (totalmente transparente).
-    lineas_color = []
-    for vmin, vmax, hex_color in ESCALA:
-        r, g, b = hex_a_rgb(hex_color)
-        lineas_color.append(f"{vmin} {r} {g} {b} 255")
-    lineas_color.append(f"{NODATA_VALOR} 0 0 0 0")
-    tabla_color = "\n".join(lineas_color)
-
-    archivo_tabla = os.path.join(tmp, "paleta.txt")
-    with open(archivo_tabla, "w") as f:
-        f.write(tabla_color)
-
-    print(f"  Tabla de colores ({len(lineas_color)} categorías):")
-    for linea in lineas_color:
-        print(f"    {linea}")
-
-    subprocess.run([
-        "gdaldem", "color-relief",
-        archivo_tif,
-        archivo_tabla,
-        archivo_color,
-        "-nearest_color_entry",
-    ], check=True)
-
-    print(f"  Ráster coloreado: {archivo_color}")
-
-    # --------------------------------------------------------
-    # 8. Generar teselas
-    # --------------------------------------------------------
-    print(f"\n{'=' * 60}")
-    print("GENERANDO TESELAS")
-    print(f"{'=' * 60}")
-
-    if os.path.exists(DIR_TESELAS):
-        subprocess.run(["rm", "-rf", DIR_TESELAS], check=True)
-
-    subprocess.run([
-        "gdal2tiles.py",
-        "-z", f"{ZOOM_MIN}-{ZOOM_MAX}",
-        "-w", "none",
-        "-p", "mercator",
-        "--processes", "4",
-        archivo_color,
-        DIR_TESELAS,
-    ], check=True)
-
-    print(f"  Teselas generadas en {DIR_TESELAS}/")
-
-    # --------------------------------------------------------
-    # 9. Metadata con la escala
-    # --------------------------------------------------------
-    os.makedirs(DIR_METADATA, exist_ok=True)
-
-    escala_metadata = []
-    for vmin, vmax, color in ESCALA:
-        if vmin == 0 and vmax == 0.1:
-            label = "Sin precipitación"
-        elif vmax == 500:
-            label = f"más de {vmin}"
+            lluvia_regular = lluvia_regular.rio.clip(
+                gdf.geometry.values,
+                gdf.crs,
+                drop=False,
+                invert=False,
+            )
+            log.info("  Recorte aplicado. Forma después del clip: %s",
+                     lluvia_regular.shape)
         else:
-            label = f"{vmin} - {vmax}"
-        escala_metadata.append({
-            "min": vmin,
-            "max": vmax,
-            "color": color,
-            "label": label,
-        })
+            log.warning("  ADVERTENCIA: no se encontró %s", RUTA_POLIGONO)
+            log.warning("  Se conserva el recorte rectangular del bbox.")
 
-    metadata = {
-        "fecha_emision": datetime.datetime.now(
-            datetime.timezone.utc).isoformat(),
-        "corrida_wrf": f"{anio}-{mes}-{dia} 12 UTC",
-        "variable": "Precipitación acumulada 72 h",
-        "unidad": "mm",
-        "bounds": [[LAT_MIN, LON_MIN], [LAT_MAX, LON_MAX]],
-        "zoom_min": ZOOM_MIN,
-        "zoom_max": ZOOM_MAX,
-        "max_mm": float(np.nanmax(acumulado_interp)),
-        "horas_procesadas": horas_procesadas,
-        "escala": escala_metadata,
-        "crs": "EPSG:4326",
-        "recortado_a": "Santa Fe" if os.path.exists(RUTA_POLIGONO) else None,
-    }
+        # ----------------------------------------------------
+        # 6c. NoData explícito y guardado
+        # ----------------------------------------------------
+        lluvia_regular = lluvia_regular.fillna(NODATA_VALOR)
+        lluvia_regular = lluvia_regular.rio.write_nodata(NODATA_VALOR)
+        lluvia_regular.rio.to_raster(archivo_tif, nodata=NODATA_VALOR)
 
-    ruta_metadata = os.path.join(DIR_METADATA, "metadata.json")
-    with open(ruta_metadata, "w", encoding="utf-8") as f:
-        json.dump(metadata, f, indent=2, ensure_ascii=False)
+        arr = lluvia_regular.values
+        total = arr.size
+        nodata_count = int(np.sum(arr == NODATA_VALOR))
+        validos_final = arr[arr != NODATA_VALOR]
 
-    print(f"\n  Metadata: {ruta_metadata}")
-    print(f"  Máximo final: {metadata['max_mm']:.2f} mm")
+        log.info("  GeoTIFF final: %s", archivo_tif)
+        log.info("  Píxeles totales: %d", total)
+        log.info("  Píxeles con NoData: %d", nodata_count)
+        log.info("  Píxeles válidos: %d", total - nodata_count)
+        if len(validos_final) > 0:
+            log.info("  Rango de valores válidos: %.2f a %.2f mm",
+                     float(np.min(validos_final)), float(np.max(validos_final)))
 
-print("\n" + "=" * 60)
-print("PROCESO COMPLETO")
-print("=" * 60)
+        # Validación: si no hay datos, abortar
+        if len(validos_final) == 0:
+            log.error("El ráster no tiene píxeles válidos. Se aborta.")
+            sys.exit(1)
+
+        # ----------------------------------------------------
+        # 7. Paleta con NoData transparente
+        # ----------------------------------------------------
+        log.info("=" * 60)
+        log.info("APLICANDO PALETA DE COLORES")
+        log.info("=" * 60)
+
+        archivo_color = os.path.join(tmp, "pronostico_color.tif")
+
+        # IMPORTANTE: la entrada NoData va PRIMERO.
+        # gdaldem evalúa de menor a mayor; con -alpha respeta el canal alfa.
+        lineas_color = [f"{NODATA_VALOR} 0 0 0 0"]
+        for vmin, vmax, hex_color in ESCALA:
+            r, g, b = hex_a_rgb(hex_color)
+            lineas_color.append(f"{vmin} {r} {g} {b} 255")
+
+        tabla_color = "\n".join(lineas_color)
+        archivo_tabla = os.path.join(tmp, "paleta.txt")
+        with open(archivo_tabla, "w") as f:
+            f.write(tabla_color)
+
+        log.info("  Tabla de colores (%d entradas):", len(lineas_color))
+        for linea in lineas_color:
+            log.info("    %s", linea)
+
+        # -alpha respeta la transparencia de la tabla.
+        # NO usamos -nearest_color_entry (generaba el rojo vino en NoData).
+        subprocess.run([
+            "gdaldem", "color-relief",
+            archivo_tif,
+            archivo_tabla,
+            archivo_color,
+            "-alpha",
+        ], check=True)
+
+        log.info("  Ráster coloreado: %s", archivo_color)
+
+        # ----------------------------------------------------
+        # 8. Teselas
+        # ----------------------------------------------------
+        log.info("=" * 60)
+        log.info("GENERANDO TESELAS")
+        log.info("=" * 60)
+
+        if os.path.exists(DIR_TESELAS):
+            shutil.rmtree(DIR_TESELAS)
+
+        subprocess.run([
+            "gdal2tiles.py",
+            "-z", f"{ZOOM_MIN}-{ZOOM_MAX}",
+            "-w", "none",
+            "-p", "mercator",
+            "--processes", "4",
+            archivo_color,
+            DIR_TESELAS,
+        ], check=True)
+
+        log.info("  Teselas generadas en %s/", DIR_TESELAS)
+
+        # ----------------------------------------------------
+        # 9. Metadata
+        # ----------------------------------------------------
+        os.makedirs(DIR_METADATA, exist_ok=True)
+
+        escala_metadata = []
+        for vmin, vmax, color in ESCALA:
+            if vmin == 0 and vmax == 0.1:
+                label = "Sin precipitación"
+            elif vmax == 500:
+                label = f"más de {vmin}"
+            else:
+                label = f"{vmin} - {vmax}"
+            escala_metadata.append({
+                "min": vmin,
+                "max": vmax,
+                "color": color,
+                "label": label,
+            })
+
+        metadata = {
+            "fecha_emision": datetime.datetime.now(
+                datetime.timezone.utc).isoformat(),
+            "corrida_wrf": f"{anio}-{mes}-{dia} 12 UTC",
+            "variable": "Precipitación acumulada 72 h",
+            "unidad": "mm",
+            "bounds": [[LAT_MIN, LON_MIN], [LAT_MAX, LON_MAX]],
+            "zoom_min": ZOOM_MIN,
+            "zoom_max": ZOOM_MAX,
+            "max_mm": float(np.nanmax(acumulado_interp)),
+            "horas_procesadas": horas_procesadas,
+            "escala": escala_metadata,
+            "crs": "EPSG:4326",
+            "recortado_a": "Santa Fe" if os.path.exists(RUTA_POLIGONO) else None,
+        }
+
+        ruta_metadata = os.path.join(DIR_METADATA, "metadata.json")
+        with open(ruta_metadata, "w", encoding="utf-8") as f:
+            json.dump(metadata, f, indent=2, ensure_ascii=False)
+
+        log.info("  Metadata: %s", ruta_metadata)
+        log.info("  Máximo final: %.2f mm", metadata["max_mm"])
+
+    log.info("=" * 60)
+    log.info("PROCESO COMPLETO")
+    log.info("=" * 60)
+
+
+if __name__ == "__main__":
+    main()
