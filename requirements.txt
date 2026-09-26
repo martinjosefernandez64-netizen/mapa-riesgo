@@ -1,7 +1,10 @@
 xarray
 netCDF4
 rioxarray
+rasterio
 numpy
 scipy
 s3fs
 geopandas
+shapely
+pyogrio
