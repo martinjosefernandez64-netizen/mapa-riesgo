@@ -32,9 +32,13 @@ jobs:
       - name: Instalar dependencias Python
         run: pip install -r requirements.txt
 
+      - name: Limpiar teselas viejas
+        run: |
+          rm -rf tiles_pronostico/
+          mkdir -p tiles_pronostico/
+
       - name: Ejecutar script de pronóstico
         run: python scripts/generar_pronostico.py
-
       - name: Configurar git
         run: |
           git config user.name "github-actions[bot]"
