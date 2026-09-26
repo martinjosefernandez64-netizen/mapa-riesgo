@@ -2,14 +2,15 @@
 """
 Genera el pronóstico de precipitación acumulada 72 h del WRF-SMN.
 
-Escala de colores: adaptada del SMN para el sector agropecuario.
-10 categorías discretas, con cortes finos en el rango bajo.
+Salida:
+- Teselas XYZ (PNG con transparencia) recortadas al polígono de Santa Fe.
+- Metadata con la escala del SMN orientada al sector agropecuario.
 
 Optimizaciones:
-- Descarga paralela de los 72 archivos 10M
-- Acumulación en streaming (memoria constante)
-- Borrado inmediato de cada NetCDF
-- Reintentos ante fallos del bucket
+- Descarga paralela de los 72 archivos 10M.
+- Acumulación en streaming.
+- Borrado inmediato de cada NetCDF.
+- Sin reproyección: se trabaja en EPSG:4326 (WGS84).
 """
 
 import os
@@ -24,6 +25,7 @@ import numpy as np
 import xarray as xr
 import rioxarray  # noqa: F401
 import s3fs
+import geopandas as gpd
 from scipy.interpolate import griddata
 
 # ============================================================
@@ -32,6 +34,7 @@ from scipy.interpolate import griddata
 BUCKET = "smn-ar-wrf"
 DIR_TESELAS = "tiles_pronostico"
 DIR_METADATA = "datos/pronostico"
+RUTA_POLIGONO = "datos/santa_fe.geojson"
 
 # Bounding box de Santa Fe con margen
 LON_MIN, LON_MAX = -63.5, -58.5
@@ -250,7 +253,7 @@ with tempfile.TemporaryDirectory() as tmp:
     print(f"  Media acumulada:  {np.nanmean(acumulado):.4f} mm")
 
     # --------------------------------------------------------
-    # 5. Recortar al bbox de Santa Fe e interpolar
+    # 5. Recortar al bbox e interpolar
     # --------------------------------------------------------
     print(f"\n{'=' * 60}")
     print("RECORTANDO E INTERPOLANDO A CUADRÍCULA REGULAR")
@@ -279,12 +282,8 @@ with tempfile.TemporaryDirectory() as tmp:
     print(f"  Máximo interpolado: {np.nanmax(acumulado_interp):.2f} mm")
 
     # --------------------------------------------------------
-    # 6. Construir DataArray y reproyectar a Faja 4
+    # 6. Construir DataArray en EPSG:4326
     # --------------------------------------------------------
-    print(f"\n{'=' * 60}")
-    print("REPROYECTANDO A POSGAR 2007 / FAJA 4")
-    print(f"{'=' * 60}")
-
     lluvia_regular = xr.DataArray(
         acumulado_interp,
         dims=["latitude", "longitude"],
@@ -297,9 +296,38 @@ with tempfile.TemporaryDirectory() as tmp:
         x_dim="longitude", y_dim="latitude", inplace=True
     )
 
-    lluvia_5347 = lluvia_regular.rio.reproject("EPSG:5347")
-    lluvia_5347 = lluvia_5347.rio.write_nodata(np.nan)
-    lluvia_5347.rio.to_raster(archivo_tif, nodata=np.nan)
+    # --------------------------------------------------------
+    # 6b. Recortar al polígono de Santa Fe (en EPSG:4326)
+    # --------------------------------------------------------
+    print(f"\n{'=' * 60}")
+    print("RECORTANDO AL POLÍGONO DE SANTA FE")
+    print(f"{'=' * 60}")
+
+    if os.path.exists(RUTA_POLIGONO):
+        gdf = gpd.read_file(RUTA_POLIGONO)
+        print(f"  Polígono cargado: {len(gdf)} entidad(es), CRS: {gdf.crs}")
+
+        # Si el polígono no está en EPSG:4326, reproyectarlo
+        if gdf.crs and str(gdf.crs) != "EPSG:4326":
+            gdf = gdf.to_crs("EPSG:4326")
+            print(f"  Polígono reproyectado a EPSG:4326")
+
+        lluvia_regular = lluvia_regular.rio.clip(
+            gdf.geometry.values,
+            gdf.crs,
+            drop=True,
+            invert=False,
+        )
+        print(f"  Recorte aplicado. Forma después del clip: {lluvia_regular.shape}")
+    else:
+        print(f"  ADVERTENCIA: no se encontró {RUTA_POLIGONO}")
+        print(f"  Se conserva el recorte rectangular del bbox.")
+
+    # --------------------------------------------------------
+    # 6c. Guardar GeoTIFF
+    # --------------------------------------------------------
+    lluvia_regular = lluvia_regular.rio.write_nodata(np.nan)
+    lluvia_regular.rio.to_raster(archivo_tif, nodata=np.nan)
     print(f"  GeoTIFF temporal: {archivo_tif}")
 
     # --------------------------------------------------------
@@ -311,8 +339,6 @@ with tempfile.TemporaryDirectory() as tmp:
 
     archivo_reclas = os.path.join(tmp, "pronostico_reclas.tif")
 
-    # Expresión de reclasificación por categorías (0 a 9)
-    # Semiabierto: min <= x < max
     expr = ("numpy.where(A < 0.1, 0, "
             "numpy.where(A < 1, 1, "
             "numpy.where(A < 5, 2, "
@@ -345,15 +371,12 @@ with tempfile.TemporaryDirectory() as tmp:
 
     archivo_color = os.path.join(tmp, "pronostico_color.tif")
 
-    # Construir el archivo de tabla de colores para gdaldem
-    # Formato: valor R G B [A]
     lineas_color = []
     for i, (vmin, vmax, hex_color) in enumerate(ESCALA):
         r, g, b = hex_a_rgb(hex_color)
         lineas_color.append(f"{i} {r} {g} {b} 255")
     tabla_color = "\n".join(lineas_color)
 
-    # Escribir la tabla a un archivo temporal
     archivo_tabla = os.path.join(tmp, "paleta.txt")
     with open(archivo_tabla, "w") as f:
         f.write(tabla_color)
@@ -424,6 +447,8 @@ with tempfile.TemporaryDirectory() as tmp:
         "max_mm": float(np.nanmax(acumulado_interp)),
         "horas_procesadas": horas_procesadas,
         "escala": escala_metadata,
+        "crs": "EPSG:4326",
+        "recortado_a": "Santa Fe" if os.path.exists(RUTA_POLIGONO) else None,
     }
 
     ruta_metadata = os.path.join(DIR_METADATA, "metadata.json")
