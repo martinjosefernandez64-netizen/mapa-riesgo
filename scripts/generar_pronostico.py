@@ -339,7 +339,8 @@ with tempfile.TemporaryDirectory() as tmp:
 
     archivo_reclas = os.path.join(tmp, "pronostico_reclas.tif")
 
-    expr = ("numpy.where(A < 0.1, 0, "
+    expr = ("numpy.where(numpy.isnan(A), 255, "
+            "numpy.where(A < 0.1, 0, "
             "numpy.where(A < 1, 1, "
             "numpy.where(A < 5, 2, "
             "numpy.where(A < 15, 3, "
@@ -347,7 +348,7 @@ with tempfile.TemporaryDirectory() as tmp:
             "numpy.where(A < 50, 5, "
             "numpy.where(A < 75, 6, "
             "numpy.where(A < 100, 7, "
-            "numpy.where(A < 150, 8, 9)))))))))")
+            "numpy.where(A < 150, 8, 9))))))))))")
 
     subprocess.run([
         "gdal_calc.py",
