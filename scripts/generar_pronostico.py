@@ -11,6 +11,7 @@ Optimizaciones:
 - Acumulación en streaming.
 - Borrado inmediato de cada NetCDF.
 - Sin reproyección: se trabaja en EPSG:4326 (WGS84).
+- Paleta aplicada directamente sobre el ráster continuo, sin reclasificación.
 """
 
 import os
@@ -52,7 +53,8 @@ HORAS = list(range(1, 73))
 # ------------------------------------------------------------
 # ESCALA DE COLORES (adaptada del SMN para el sector agropecuario)
 # Cada entrada: (límite_inferior, límite_superior, color_hex)
-# Los cortes son semiabiertos: min <= x < max
+# Los valores son los umbrales inferiores de cada categoría.
+# gdaldem asigna a cada píxel el color del umbral inmediatamente inferior.
 # ------------------------------------------------------------
 ESCALA = [
     (0,   0.1, "#f7f4e9"),   # Sin precipitación
@@ -275,7 +277,7 @@ with tempfile.TemporaryDirectory() as tmp:
         valores[validos],
         (grid_lon, grid_lat),
         method="linear",
-        fill_value=0.0,
+        fill_value=np.nan,
     ).astype(np.float32)
 
     print(f"  Cuadrícula interpolada: {acumulado_interp.shape}")
@@ -307,7 +309,6 @@ with tempfile.TemporaryDirectory() as tmp:
         gdf = gpd.read_file(RUTA_POLIGONO)
         print(f"  Polígono cargado: {len(gdf)} entidad(es), CRS: {gdf.crs}")
 
-        # Si el polígono no está en EPSG:4326, reproyectarlo
         if gdf.crs and str(gdf.crs) != "EPSG:4326":
             gdf = gdf.to_crs("EPSG:4326")
             print(f"  Polígono reproyectado a EPSG:4326")
@@ -324,47 +325,14 @@ with tempfile.TemporaryDirectory() as tmp:
         print(f"  Se conserva el recorte rectangular del bbox.")
 
     # --------------------------------------------------------
-    # 6c. Guardar GeoTIFF
+    # 6c. Guardar GeoTIFF continuo con NoData = NaN
     # --------------------------------------------------------
     lluvia_regular = lluvia_regular.rio.write_nodata(np.nan)
     lluvia_regular.rio.to_raster(archivo_tif, nodata=np.nan)
     print(f"  GeoTIFF temporal: {archivo_tif}")
 
     # --------------------------------------------------------
-    # 7. Reclasificar a las categorías del SMN
-    # --------------------------------------------------------
-    print(f"\n{'=' * 60}")
-    print("RECLASIFICANDO A CATEGORÍAS DEL SMN (10 clases)")
-    print(f"{'=' * 60}")
-
-    archivo_reclas = os.path.join(tmp, "pronostico_reclas.tif")
-
-    expr = ("numpy.where(numpy.isnan(A), 255, "
-            "numpy.where(A < 0.1, 0, "
-            "numpy.where(A < 1, 1, "
-            "numpy.where(A < 5, 2, "
-            "numpy.where(A < 15, 3, "
-            "numpy.where(A < 30, 4, "
-            "numpy.where(A < 50, 5, "
-            "numpy.where(A < 75, 6, "
-            "numpy.where(A < 100, 7, "
-            "numpy.where(A < 150, 8, 9))))))))))")
-
-    subprocess.run([
-        "gdal_calc.py",
-        "--overwrite",
-        "-A", archivo_tif,
-        "--outfile", archivo_reclas,
-        "--calc", expr,
-        "--type", "Byte",
-        "--NoDataValue", "255",
-        "--quiet",
-    ], check=True)
-
-    print(f"  Ráster reclasificado: {archivo_reclas}")
-
-    # --------------------------------------------------------
-    # 8. Aplicar paleta de colores
+    # 7. Aplicar paleta de colores sobre el ráster continuo
     # --------------------------------------------------------
     print(f"\n{'=' * 60}")
     print("APLICANDO PALETA DE COLORES")
@@ -372,19 +340,27 @@ with tempfile.TemporaryDirectory() as tmp:
 
     archivo_color = os.path.join(tmp, "pronostico_color.tif")
 
+    # Tabla de colores: valor R G B A
+    # Los valores son los umbrales inferiores de cada categoría.
+    # gdaldem asigna a cada píxel el color del umbral inmediatamente inferior.
+    # Los píxeles con NoData (NaN) quedan transparentes con el flag -alpha.
     lineas_color = []
-    for i, (vmin, vmax, hex_color) in enumerate(ESCALA):
+    for vmin, vmax, hex_color in ESCALA:
         r, g, b = hex_a_rgb(hex_color)
-        lineas_color.append(f"{i} {r} {g} {b} 255")
+        lineas_color.append(f"{vmin} {r} {g} {b} 255")
     tabla_color = "\n".join(lineas_color)
 
     archivo_tabla = os.path.join(tmp, "paleta.txt")
     with open(archivo_tabla, "w") as f:
         f.write(tabla_color)
 
+    print(f"  Tabla de colores ({len(lineas_color)} categorías):")
+    for linea in lineas_color:
+        print(f"    {linea}")
+
     subprocess.run([
         "gdaldem", "color-relief",
-        archivo_reclas,
+        archivo_tif,
         archivo_tabla,
         archivo_color,
         "-nearest_color_entry",
@@ -394,7 +370,7 @@ with tempfile.TemporaryDirectory() as tmp:
     print(f"  Ráster coloreado: {archivo_color}")
 
     # --------------------------------------------------------
-    # 9. Generar teselas
+    # 8. Generar teselas
     # --------------------------------------------------------
     print(f"\n{'=' * 60}")
     print("GENERANDO TESELAS")
@@ -417,7 +393,7 @@ with tempfile.TemporaryDirectory() as tmp:
     print(f"  Teselas generadas en {DIR_TESELAS}/")
 
     # --------------------------------------------------------
-    # 10. Metadata con la escala
+    # 9. Metadata con la escala
     # --------------------------------------------------------
     os.makedirs(DIR_METADATA, exist_ok=True)
 
@@ -425,7 +401,7 @@ with tempfile.TemporaryDirectory() as tmp:
     for vmin, vmax, color in ESCALA:
         if vmin == 0 and vmax == 0.1:
             label = "Sin precipitación"
-        elif vmin == 150:
+        elif vmax == 500:
             label = f"más de {vmin}"
         else:
             label = f"{vmin} - {vmax}"
