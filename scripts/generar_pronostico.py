@@ -12,6 +12,8 @@ Optimizaciones:
 - Borrado inmediato de cada NetCDF.
 - Sin reproyección: se trabaja en EPSG:4326 (WGS84).
 - Paleta aplicada directamente sobre el ráster continuo, sin reclasificación.
+- Enmascaramiento real con rasterio.mask (no solo recorte del bbox).
+- NoData explícito (-9999) para que gdaldem lo trate correctamente.
 """
 
 import os
@@ -49,6 +51,10 @@ MAX_WORKERS = 8
 
 # Horas del pronóstico (1 a 72). El _000 es condición inicial.
 HORAS = list(range(1, 73))
+
+# Valor centinela para NoData. Se elige fuera del rango real de
+# precipitación (0 a ~500 mm) para que gdaldem no lo confunda.
+NODATA_VALOR = -9999
 
 # ------------------------------------------------------------
 # ESCALA DE COLORES (adaptada del SMN para el sector agropecuario)
@@ -299,13 +305,21 @@ with tempfile.TemporaryDirectory() as tmp:
     )
 
     # --------------------------------------------------------
-    # 6b. Recortar al polígono de Santa Fe (en EPSG:4326)
+    # 6b. Enmascarar con el polígono de Santa Fe (rasterio.mask)
     # --------------------------------------------------------
     print(f"\n{'=' * 60}")
     print("RECORTANDO AL POLÍGONO DE SANTA FE")
     print(f"{'=' * 60}")
 
+    # Guardar GeoTIFF continuo con NaN antes de enmascarar
+    lluvia_regular = lluvia_regular.rio.write_nodata(np.nan)
+    lluvia_regular.rio.to_raster(archivo_tif, nodata=np.nan)
+    print(f"  GeoTIFF continuo: {archivo_tif}")
+
     if os.path.exists(RUTA_POLIGONO):
+        import rasterio
+        from rasterio.mask import mask as rio_mask
+
         gdf = gpd.read_file(RUTA_POLIGONO)
         print(f"  Polígono cargado: {len(gdf)} entidad(es), CRS: {gdf.crs}")
 
@@ -313,23 +327,39 @@ with tempfile.TemporaryDirectory() as tmp:
             gdf = gdf.to_crs("EPSG:4326")
             print(f"  Polígono reproyectado a EPSG:4326")
 
-        lluvia_regular = lluvia_regular.rio.clip(
-            gdf.geometry.values,
-            gdf.crs,
-            drop=True,
-            invert=False,
-        )
-        print(f"  Recorte aplicado. Forma después del clip: {lluvia_regular.shape}")
+        # Enmascarar con rasterio (garantiza NoData fuera del polígono)
+        with rasterio.open(archivo_tif) as src:
+            geoms = [geom.__geo_interface__ for geom in gdf.geometry]
+            out_image, out_transform = rio_mask(
+                src, geoms, crop=True, nodata=np.nan, filled=True
+            )
+            out_meta = src.meta.copy()
+            out_meta.update({
+                "height": out_image.shape[1],
+                "width": out_image.shape[2],
+                "transform": out_transform,
+                "nodata": np.nan,
+            })
+
+        with rasterio.open(archivo_tif, "w", **out_meta) as dest:
+            dest.write(out_image)
+
+        print(f"  Recorte aplicado. Forma después del clip: {out_image.shape}")
     else:
         print(f"  ADVERTENCIA: no se encontró {RUTA_POLIGONO}")
-        print(f"  Se conserva el recorte rectangular del bbox.")
 
     # --------------------------------------------------------
-    # 6c. Guardar GeoTIFF continuo con NoData = NaN
+    # 6c. Reemplazar NaN por NoData explícito para gdaldem
     # --------------------------------------------------------
-    lluvia_regular = lluvia_regular.rio.write_nodata(np.nan)
-    lluvia_regular.rio.to_raster(archivo_tif, nodata=np.nan)
-    print(f"  GeoTIFF temporal: {archivo_tif}")
+    # gdaldem maneja mal NaN, así que usamos un centinela fuera
+    # del rango real de precipitación.
+
+    lluvia_enmascarada = rioxarray.open_rasterio(archivo_tif, masked=True)
+    lluvia_enmascarada = lluvia_enmascarada.fillna(NODATA_VALOR)
+    lluvia_enmascarada = lluvia_enmascarada.rio.write_nodata(NODATA_VALOR)
+    lluvia_enmascarada.rio.to_raster(archivo_tif, nodata=NODATA_VALOR)
+
+    print(f"  GeoTIFF con NoData={NODATA_VALOR}: {archivo_tif}")
 
     # --------------------------------------------------------
     # 7. Aplicar paleta de colores sobre el ráster continuo
@@ -342,12 +372,13 @@ with tempfile.TemporaryDirectory() as tmp:
 
     # Tabla de colores: valor R G B A
     # Los valores son los umbrales inferiores de cada categoría.
-    # gdaldem asigna a cada píxel el color del umbral inmediatamente inferior.
-    # Los píxeles con NoData (NaN) quedan transparentes con el flag -alpha.
+    # El valor -9999 corresponde al NoData y se pinta con alfa 0
+    # (totalmente transparente).
     lineas_color = []
     for vmin, vmax, hex_color in ESCALA:
         r, g, b = hex_a_rgb(hex_color)
         lineas_color.append(f"{vmin} {r} {g} {b} 255")
+    lineas_color.append(f"{NODATA_VALOR} 0 0 0 0")
     tabla_color = "\n".join(lineas_color)
 
     archivo_tabla = os.path.join(tmp, "paleta.txt")
@@ -364,7 +395,6 @@ with tempfile.TemporaryDirectory() as tmp:
         archivo_tabla,
         archivo_color,
         "-nearest_color_entry",
-        "-alpha",
     ], check=True)
 
     print(f"  Ráster coloreado: {archivo_color}")
