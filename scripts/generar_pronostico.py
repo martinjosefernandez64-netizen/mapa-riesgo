@@ -385,7 +385,6 @@ with tempfile.TemporaryDirectory() as tmp:
         "-w", "none",
         "-p", "mercator",
         "--processes", "4",
-        "--xyz",
         archivo_color,
         DIR_TESELAS,
     ], check=True)
