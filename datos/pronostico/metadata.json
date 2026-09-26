@@ -1,5 +1,5 @@
 {
-  "fecha_emision": "2026-09-26T00:42:16.572112+00:00",
+  "fecha_emision": "2026-09-26T01:32:49.404555+00:00",
   "corrida_wrf": "2026-09-25 12 UTC",
   "variable": "Precipitación acumulada 72 h",
   "unidad": "mm",
@@ -78,5 +78,7 @@
       "color": "#67001f",
       "label": "más de 150"
     }
-  ]
+  ],
+  "crs": "EPSG:4326",
+  "recortado_a": "Santa Fe"
 }
