@@ -290,7 +290,7 @@ with tempfile.TemporaryDirectory() as tmp:
     print(f"  Máximo interpolado: {np.nanmax(acumulado_interp):.2f} mm")
 
     # --------------------------------------------------------
-    # 6. Construir DataArray en EPSG:4326
+    # 6. Construir DataArray, recortar y preparar GeoTIFF final
     # --------------------------------------------------------
     lluvia_regular = xr.DataArray(
         acumulado_interp,
@@ -305,21 +305,13 @@ with tempfile.TemporaryDirectory() as tmp:
     )
 
     # --------------------------------------------------------
-    # 6b. Enmascarar con el polígono de Santa Fe (rasterio.mask)
+    # 6b. Recortar al polígono con fill_value=-9999
     # --------------------------------------------------------
     print(f"\n{'=' * 60}")
     print("RECORTANDO AL POLÍGONO DE SANTA FE")
     print(f"{'=' * 60}")
 
-    # Guardar GeoTIFF continuo con NaN antes de enmascarar
-    lluvia_regular = lluvia_regular.rio.write_nodata(np.nan)
-    lluvia_regular.rio.to_raster(archivo_tif, nodata=np.nan)
-    print(f"  GeoTIFF continuo: {archivo_tif}")
-
     if os.path.exists(RUTA_POLIGONO):
-        import rasterio
-        from rasterio.mask import mask as rio_mask
-
         gdf = gpd.read_file(RUTA_POLIGONO)
         print(f"  Polígono cargado: {len(gdf)} entidad(es), CRS: {gdf.crs}")
 
@@ -327,60 +319,41 @@ with tempfile.TemporaryDirectory() as tmp:
             gdf = gdf.to_crs("EPSG:4326")
             print(f"  Polígono reproyectado a EPSG:4326")
 
-        # Enmascarar con rasterio (garantiza NoData fuera del polígono)
-        with rasterio.open(archivo_tif) as src:
-            geoms = [geom.__geo_interface__ for geom in gdf.geometry]
-            out_image, out_transform = rio_mask(
-                src, geoms, crop=True, nodata=np.nan, filled=True
-            )
-            out_meta = src.meta.copy()
-            out_meta.update({
-                "height": out_image.shape[1],
-                "width": out_image.shape[2],
-                "transform": out_transform,
-                "nodata": np.nan,
-            })
-
-        with rasterio.open(archivo_tif, "w", **out_meta) as dest:
-            dest.write(out_image)
-
-        print(f"  Recorte aplicado. Forma después del clip: {out_image.shape}")
+        # rioxarray.clip devuelve NaN fuera del polígono.
+        # Reemplazamos inmediatamente con NODATA_VALOR (-9999).
+        lluvia_regular = lluvia_regular.rio.clip(
+            gdf.geometry.values,
+            gdf.crs,
+            drop=False,          # mantener la extensión original
+            invert=False,
+        )
+        print(f"  Recorte aplicado. Forma después del clip: {lluvia_regular.shape}")
     else:
         print(f"  ADVERTENCIA: no se encontró {RUTA_POLIGONO}")
+        print(f"  Se conserva el recorte rectangular del bbox.")
 
     # --------------------------------------------------------
-    # 6c. Reemplazar NaN por NoData explícito usando numpy puro
+    # 6c. Reemplazar NaN por -9999 y guardar GeoTIFF
     # --------------------------------------------------------
-    # gdaldem maneja mal NaN, así que usamos un centinela fuera
-    # del rango real de precipitación. Trabajamos directamente
-    # sobre el archivo con rasterio para evitar que rioxarray
-    # enmascare valores válidos.
+    # Todos los NaN (fuera del polígono o fuera del alcance de la
+    # interpolación) se convierten al valor centinela.
+    lluvia_regular = lluvia_regular.fillna(NODATA_VALOR)
+    lluvia_regular = lluvia_regular.rio.write_nodata(NODATA_VALOR)
+    lluvia_regular.rio.to_raster(archivo_tif, nodata=NODATA_VALOR)
 
-    import rasterio
+    # Diagnóstico
+    arr = lluvia_regular.values
+    total = arr.size
+    nodata_count = int(np.sum(arr == NODATA_VALOR))
+    validos = arr[arr != NODATA_VALOR]
 
-    with rasterio.open(archivo_tif) as src:
-        data = src.read(1)
-        perfil = src.profile.copy()
-
-    # Reemplazar NaN por el centinela
-    data = np.where(np.isnan(data), NODATA_VALOR, data)
-    data = data.astype(np.float32)
-
-    perfil.update({
-        "dtype": "float32",
-        "nodata": NODATA_VALOR,
-    })
-
-    with rasterio.open(archivo_tif, "w", **perfil) as dst:
-        dst.write(data, 1)
-
-    print(f"  GeoTIFF con NoData={NODATA_VALOR}: {archivo_tif}")
-    print(f"  Píxeles con NoData: {int(np.sum(data == NODATA_VALOR))} "
-          f"de {data.size}")
-    print(f"  Rango de valores válidos: "
-          f"{np.nanmin(data[data != NODATA_VALOR]):.2f} a "
-          f"{np.nanmax(data[data != NODATA_VALOR]):.2f} mm")
-
+    print(f"  GeoTIFF final: {archivo_tif}")
+    print(f"  Píxeles totales: {total}")
+    print(f"  Píxeles con NoData: {nodata_count}")
+    print(f"  Píxeles válidos: {total - nodata_count}")
+    if len(validos) > 0:
+        print(f"  Rango de valores válidos: "
+              f"{np.min(validos):.2f} a {np.max(validos):.2f} mm")
     # --------------------------------------------------------
     # 7. Aplicar paleta de colores sobre el ráster continuo
     # --------------------------------------------------------
