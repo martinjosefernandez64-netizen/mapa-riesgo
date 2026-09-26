@@ -460,11 +460,11 @@ def main():
             "-z", f"{ZOOM_MIN}-{ZOOM_MAX}",
             "-w", "none",
             "-p", "mercator",
+            "--xyz",
             "--processes", "4",
             archivo_color,
             DIR_TESELAS,
         ], check=True)
-
         log.info("  Teselas generadas en %s/", DIR_TESELAS)
 
         # ------------------------------------------------
