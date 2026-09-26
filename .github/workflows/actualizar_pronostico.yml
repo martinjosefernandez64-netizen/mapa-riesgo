@@ -42,7 +42,7 @@ jobs:
 
       - name: Commit y push
         run: |
-          git add tiles_pronostico/ datos/pronostico/ 2>/dev/null || true
+          git add -A tiles_pronostico/ datos/pronostico/ 2>/dev/null || true
           if git diff --staged --quiet; then
             echo "Sin cambios para commitear"
           else
