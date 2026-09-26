@@ -1,5 +1,5 @@
 {
-  "fecha_emision": "2026-09-26T00:00:20.905298+00:00",
+  "fecha_emision": "2026-09-26T00:42:16.572112+00:00",
   "corrida_wrf": "2026-09-25 12 UTC",
   "variable": "Precipitación acumulada 72 h",
   "unidad": "mm",
@@ -16,5 +16,67 @@
   "zoom_min": 0,
   "zoom_max": 11,
   "max_mm": 20.345619201660156,
-  "horas_procesadas": 72
+  "horas_procesadas": 72,
+  "escala": [
+    {
+      "min": 0,
+      "max": 0.1,
+      "color": "#f7f4e9",
+      "label": "Sin precipitación"
+    },
+    {
+      "min": 0.1,
+      "max": 1,
+      "color": "#ffffcc",
+      "label": "0.1 - 1"
+    },
+    {
+      "min": 1,
+      "max": 5,
+      "color": "#c2e699",
+      "label": "1 - 5"
+    },
+    {
+      "min": 5,
+      "max": 15,
+      "color": "#78c679",
+      "label": "5 - 15"
+    },
+    {
+      "min": 15,
+      "max": 30,
+      "color": "#6baed6",
+      "label": "15 - 30"
+    },
+    {
+      "min": 30,
+      "max": 50,
+      "color": "#4292c6",
+      "label": "30 - 50"
+    },
+    {
+      "min": 50,
+      "max": 75,
+      "color": "#2171b5",
+      "label": "50 - 75"
+    },
+    {
+      "min": 75,
+      "max": 100,
+      "color": "#08519c",
+      "label": "75 - 100"
+    },
+    {
+      "min": 100,
+      "max": 150,
+      "color": "#d6604d",
+      "label": "100 - 150"
+    },
+    {
+      "min": 150,
+      "max": 500,
+      "color": "#67001f",
+      "label": "más de 150"
+    }
+  ]
 }
