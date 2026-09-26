@@ -2,9 +2,13 @@ name: Actualizar pronóstico 72h
 
 on:
   schedule:
-    # Todos los días a las 14:00 UTC = 11:00 ART
-    - cron: '0 14 * * *'
+    - cron: '0 18 * * *'
+    - cron: '0 7 * * *'
   workflow_dispatch:
+
+concurrency:
+  group: pronostico-72h
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -12,7 +16,7 @@ permissions:
 jobs:
   actualizar:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
 
     steps:
       - name: Clonar repositorio
@@ -24,21 +28,23 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
 
-      - name: Instalar GDAL
+      - name: Instalar GDAL (solo binarios)
         run: |
           sudo apt-get update
-          sudo apt-get install -y gdal-bin python3-gdal
+          sudo apt-get install -y gdal-bin
 
       - name: Instalar dependencias Python
         run: pip install -r requirements.txt
 
-      - name: Limpiar teselas viejas
+      - name: Verificar instalación
         run: |
-          rm -rf tiles_pronostico/
-          mkdir -p tiles_pronostico/
+          python -c "import xarray, rioxarray, geopandas, s3fs; print('OK')"
+          gdalinfo --version
+          which gdal2tiles.py
 
       - name: Ejecutar script de pronóstico
         run: python scripts/generar_pronostico.py
+
       - name: Configurar git
         run: |
           git config user.name "github-actions[bot]"
@@ -46,10 +52,9 @@ jobs:
 
       - name: Commit y push
         run: |
-          git add -A tiles_pronostico/ datos/pronostico/ 2>/dev/null || true
+          git add tiles_pronostico/ datos/pronostico/
           if git diff --staged --quiet; then
             echo "Sin cambios para commitear"
-          else
-            git commit -m "Actualización pronóstico 72h $(date -u +'%Y-%m-%d %H:%M UTC')"
-            git push
+            exit 0
           fi
+          git commit -m "Actualización pronóstico 72h $(date -u +%Y
