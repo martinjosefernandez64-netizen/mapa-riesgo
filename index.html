@@ -40,6 +40,40 @@
     .aviso-linea strong {
       color: #333;
     }
+    /* Leyenda */
+    .leyenda {
+      background: white;
+      padding: 10px 12px;
+      border-radius: 6px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.25);
+      font-size: 12px;
+      line-height: 1.5;
+      max-width: 220px;
+    }
+    .leyenda-titulo {
+      font-weight: bold;
+      margin-bottom: 6px;
+      font-size: 13px;
+    }
+    .leyenda-item {
+      display: flex;
+      align-items: center;
+      margin: 2px 0;
+    }
+    .leyenda-color {
+      width: 18px;
+      height: 14px;
+      margin-right: 6px;
+      border: 1px solid rgba(0,0,0,0.15);
+      flex-shrink: 0;
+    }
+    .leyenda-pie {
+      margin-top: 6px;
+      padding-top: 6px;
+      border-top: 1px solid #ddd;
+      font-size: 11px;
+      color: #555;
+    }
   </style>
 </head>
 <body>
@@ -79,15 +113,45 @@
     attribution: '© OpenStreetMap'
   }).addTo(map);
 
+  // ---------- Leyenda ----------
+  let controlLeyenda = null;
+
+  function construirLeyenda(meta) {
+    const leyenda = L.control({ position: 'bottomright' });
+
+    leyenda.onAdd = function () {
+      const div = L.DomUtil.create('div', 'leyenda');
+      let html = '<div class="leyenda-titulo">Precipitación 72 h (mm)</div>';
+
+      // La escala viene de menor a mayor; invertimos para mostrar
+      // los valores altos arriba (convención cartográfica).
+      const items = meta.escala.slice().reverse();
+      items.forEach(function (item) {
+        html += '<div class="leyenda-item">' +
+                '<span class="leyenda-color" style="background:' + item.color + ';"></span>' +
+                '<span>' + item.label + '</span>' +
+                '</div>';
+      });
+
+      html += '<div class="leyenda-pie">' +
+              'Corrida: ' + meta.corrida_wrf + '<br>' +
+              'Máx: ' + meta.max_mm.toFixed(1) + ' mm' +
+              '</div>';
+
+      div.innerHTML = html;
+      return div;
+    };
+
+    return leyenda;
+  }
+
   // ---------- Pronóstico 72 h ----------
   let capaPronostico = null;
-
-  // Umbral: si pasaron más de estas horas desde la emisión, avisar
   const HORAS_VIGENCIA = 30;
 
   fetch('datos/pronostico/metadata.json')
-    .then(r => r.json())
-    .then(meta => {
+    .then(function (r) { return r.json(); })
+    .then(function (meta) {
       if (!meta.fecha_emision) {
         document.getElementById('aviso-vencido').style.display = 'block';
         document.getElementById('chk-pronostico').disabled = true;
@@ -123,29 +187,38 @@
           meta.max_mm.toFixed(1) + ' mm en 72 h.</span>';
       }
 
+      // Capa de pronóstico.
+      // maxNativeZoom limita las teselas reales al zoom máximo generado.
+      // maxZoom permite seguir haciendo zoom (Leaflet escala las teselas).
       capaPronostico = L.tileLayer(
         'tiles_pronostico/{z}/{x}/{y}.png',
         {
           opacity: 0.75,
           tms: false,
-          minZoom: meta.zoom_min,
-          maxZoom: meta.zoom_max,
+          minZoom: 0,
+          maxNativeZoom: meta.zoom_max,
+          maxZoom: 18,
           attribution: 'WRF-SMN · acumulado 72 h'
         }
       );
 
+      // Leyenda
+      controlLeyenda = construirLeyenda(meta);
+
       document.getElementById('chk-pronostico')
-        .addEventListener('change', e => {
+        .addEventListener('change', function (e) {
           if (e.target.checked) {
             capaPronostico.addTo(map);
+            controlLeyenda.addTo(map);
             aviso.style.display = 'block';
           } else {
             map.removeLayer(capaPronostico);
+            map.removeControl(controlLeyenda);
             aviso.style.display = 'none';
           }
         });
     })
-    .catch(err => {
+    .catch(function (err) {
       console.warn('Pronóstico no disponible:', err);
       document.getElementById('aviso-vencido').style.display = 'block';
       document.getElementById('chk-pronostico').disabled = true;
