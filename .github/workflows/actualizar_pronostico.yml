@@ -57,4 +57,5 @@ jobs:
             echo "Sin cambios para commitear"
             exit 0
           fi
-          git commit -m "Actualización pronóstico 72h $(date -u +%Y
+          git commit -m "Actualización pronóstico 72h $(date -u +%Y-%m-%dT%H:%MZ)"
+          git push
