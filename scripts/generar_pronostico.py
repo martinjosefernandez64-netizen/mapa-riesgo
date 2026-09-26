@@ -349,17 +349,37 @@ with tempfile.TemporaryDirectory() as tmp:
         print(f"  ADVERTENCIA: no se encontró {RUTA_POLIGONO}")
 
     # --------------------------------------------------------
-    # 6c. Reemplazar NaN por NoData explícito para gdaldem
+    # 6c. Reemplazar NaN por NoData explícito usando numpy puro
     # --------------------------------------------------------
     # gdaldem maneja mal NaN, así que usamos un centinela fuera
-    # del rango real de precipitación.
+    # del rango real de precipitación. Trabajamos directamente
+    # sobre el archivo con rasterio para evitar que rioxarray
+    # enmascare valores válidos.
 
-    lluvia_enmascarada = rioxarray.open_rasterio(archivo_tif, masked=True)
-    lluvia_enmascarada = lluvia_enmascarada.fillna(NODATA_VALOR)
-    lluvia_enmascarada = lluvia_enmascarada.rio.write_nodata(NODATA_VALOR)
-    lluvia_enmascarada.rio.to_raster(archivo_tif, nodata=NODATA_VALOR)
+    import rasterio
+
+    with rasterio.open(archivo_tif) as src:
+        data = src.read(1)
+        perfil = src.profile.copy()
+
+    # Reemplazar NaN por el centinela
+    data = np.where(np.isnan(data), NODATA_VALOR, data)
+    data = data.astype(np.float32)
+
+    perfil.update({
+        "dtype": "float32",
+        "nodata": NODATA_VALOR,
+    })
+
+    with rasterio.open(archivo_tif, "w", **perfil) as dst:
+        dst.write(data, 1)
 
     print(f"  GeoTIFF con NoData={NODATA_VALOR}: {archivo_tif}")
+    print(f"  Píxeles con NoData: {int(np.sum(data == NODATA_VALOR))} "
+          f"de {data.size}")
+    print(f"  Rango de valores válidos: "
+          f"{np.nanmin(data[data != NODATA_VALOR]):.2f} a "
+          f"{np.nanmax(data[data != NODATA_VALOR]):.2f} mm")
 
     # --------------------------------------------------------
     # 7. Aplicar paleta de colores sobre el ráster continuo
