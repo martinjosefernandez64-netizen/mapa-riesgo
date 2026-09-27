@@ -489,6 +489,14 @@ def main():
         log.info("  Bounds reales del ráster: lon [%.4f, %.4f], lat [%.4f, %.4f]",
                  b[0], b[2], b[1], b[3])
 
+        # Máximo REAL dentro del polígono (no en todo el bbox).
+        # validos_final ya está calculado en el paso 6c.
+        max_dentro_poligono = float(np.max(validos_final)) if len(validos_final) > 0 else 0.0
+
+        log.info("  Máximo dentro del polígono: %.2f mm", max_dentro_poligono)
+        log.info("  Máximo en el bbox completo (referencia): %.2f mm",
+                 float(np.nanmax(acumulado_interp)))
+
         escala_metadata = []
         for vmin, vmax, color in ESCALA:
             if vmin == 0 and vmax == 0.1:
@@ -513,7 +521,8 @@ def main():
             "bounds": bounds_reales,
             "zoom_min": ZOOM_MIN,
             "zoom_max": ZOOM_MAX,
-            "max_mm": float(np.nanmax(acumulado_interp)),
+            "max_mm": max_dentro_poligono,
+            "max_mm_bbox": float(np.nanmax(acumulado_interp)),
             "horas_procesadas": horas_procesadas,
             "escala": escala_metadata,
             "crs": "EPSG:4326",
@@ -525,7 +534,8 @@ def main():
             json.dump(metadata, f, indent=2, ensure_ascii=False)
 
         log.info("  Metadata: %s", ruta_metadata)
-        log.info("  Máximo final: %.2f mm", metadata["max_mm"])
+        log.info("  Máximo final (dentro del polígono): %.2f mm",
+                 metadata["max_mm"])
 
     log.info("=" * 60)
     log.info("PROCESO COMPLETO")
