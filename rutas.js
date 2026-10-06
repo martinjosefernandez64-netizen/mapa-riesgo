@@ -4,10 +4,21 @@
    del visor sin tocar app.js.
    ============================================================ */
 
-// Referencias globales (se exponen para que app.js las pueda usar
-// si hace falta, pero rutas.js funciona de forma autónoma)
 window.capaRutas = null;
 window.capaRutasHalo = null;
+
+// Normaliza el valor de CLASE para mostrarlo prolijo
+function normalizarClase(clase) {
+  if (!clase) return '—';
+  const c = String(clase).trim().toLowerCase();
+  if (c === 'en ciudad') return 'En ciudad';
+  if (c === 'calzada natural') return 'Calzada natural';
+  if (c === 'mejorado') return 'Mejorado';
+  if (c === 'pavimentado') return 'Pavimentado';
+  if (c === 'concesionado') return 'Concesionado';
+  if (c === 'en construccion' || c === 'en construcción') return 'En construcción';
+  return String(clase).trim();
+}
 
 function construirPopupRuta(feature) {
   const p = feature.properties || {};
@@ -18,11 +29,19 @@ function construirPopupRuta(feature) {
     return s.length === 0 ? '—' : s;
   }
 
+  const nombre = safe(p.NOMBRE);
+  const jurisdiccion = safe(p.JURISDICCI);
+  const clase = normalizarClase(p.CLASE);
+  const observaciones = safe(p.OBSERVACIO);
+
   let html = '<div class="popup-ruta">';
-  html += '<h3>' + safe(p.TIPO) + ' ' + safe(p.NOMBRE) + '</h3>';
+  html += '<h3>Ruta ' + nombre + '</h3>';
   html += '<div class="popup-datos">';
-  html += '<div class="linea"><strong>Jurisdicción:</strong> ' + safe(p.JURISDICCI) + '</div>';
-  html += '<div class="linea"><strong>Clase:</strong> ' + safe(p.CLASE) + '</div>';
+  html += '<div class="linea"><strong>Jurisdicción:</strong> ' + jurisdiccion + '</div>';
+  html += '<div class="linea"><strong>Clase:</strong> ' + clase + '</div>';
+  if (observaciones !== '—') {
+    html += '<div class="linea"><strong>Observaciones:</strong> ' + observaciones + '</div>';
+  }
   html += '</div>';
   html += '</div>';
   return html;
@@ -50,12 +69,18 @@ function estiloRutaLinea() {
   };
 }
 
+function rutaValida(feature) {
+  // Descartar features sin nombre ni jurisdicción (registros vacíos)
+  const p = feature.properties || {};
+  const nombre = (p.NOMBRE || '').trim();
+  return nombre.length > 0;
+}
+
 function onEachRuta(feature, layer) {
   layer.bindPopup(construirPopupRuta(feature), {
-    maxWidth: 300,
-    minWidth: 220
+    maxWidth: 340,
+    minWidth: 240
   });
-  // Efecto hover: engrosar un poco
   layer.on('mouseover', function () {
     this.setStyle({ weight: 4 });
   });
@@ -68,19 +93,27 @@ fetch('datos/rutas/rutas.geojson')
   .then(function (r) { return r.json(); })
   .then(function (data) {
 
-    // Capa 1: halo blanco (se dibuja primero, queda debajo)
-    window.capaRutasHalo = L.geoJSON(data, {
+    // Filtrar features inválidas al vuelo
+    const featuresValidas = (data.features || []).filter(rutaValida);
+    const dataFiltrada = {
+      type: 'FeatureCollection',
+      features: featuresValidas
+    };
+
+    console.log('Rutas cargadas: ' + featuresValidas.length +
+                ' (de ' + (data.features || []).length + ' totales)');
+
+    // Capa 1: halo blanco
+    window.capaRutasHalo = L.geoJSON(dataFiltrada, {
       style: estiloRutaHalo,
-      interactive: false      // no captura clics, los pasa a la capa negra
+      interactive: false
     });
 
-    // Capa 2: línea negra (se dibuja arriba)
-    window.capaRutas = L.geoJSON(data, {
+    // Capa 2: línea negra (interactiva)
+    window.capaRutas = L.geoJSON(dataFiltrada, {
       style: estiloRutaLinea,
       onEachFeature: onEachRuta
     });
-
-    // NO se agregan al mapa acá. Esperan al checkbox.
 
     // Conectar al checkbox
     const chk = document.getElementById('chk-rutas');
