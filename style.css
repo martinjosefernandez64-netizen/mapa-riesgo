@@ -192,3 +192,10 @@ html, body {
   font-variant-numeric: tabular-nums;
   color: #333;
 }
+
+/* Alineación de los íconos SVG en leyendas */
+.leyenda-item svg {
+  margin-right: 6px;
+  flex-shrink: 0;
+  vertical-align: middle;
+}
