@@ -160,6 +160,34 @@ html, body {
   vertical-align: middle;
 }
 
+/* Popup de rutas */
+.popup-ruta {
+  font-size: 13px;
+  line-height: 1.5;
+  min-width: 220px;
+}
+
+.popup-ruta h3 {
+  margin: 0 0 8px 0;
+  font-size: 14px;
+  font-weight: bold;
+  color: #222;
+  border-bottom: 1px solid #eee;
+  padding-bottom: 6px;
+}
+
+.popup-ruta .popup-datos {
+  margin: 4px 0;
+}
+
+.popup-ruta .popup-datos .linea {
+  margin: 3px 0;
+}
+
+.popup-ruta .popup-datos .linea strong {
+  color: #444;
+}
+
 .popup-superficies .sup-valor {
   font-variant-numeric: tabular-nums;
   color: #333;
