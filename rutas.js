@@ -2,12 +2,18 @@
    CAPA DE RUTAS
    Se carga en un archivo separado para poder quitarla
    del visor sin tocar app.js.
+   
+   Estilos según CLASE:
+   - Pavimentado / Concesionado  → línea continua gruesa
+   - Mejorado / En ciudad / En construcción → línea discontinua
+   - Calzada natural → línea punteada fina
    ============================================================ */
 
 window.capaRutas = null;
 window.capaRutasHalo = null;
+window.controlLeyendaRutas = null;
 
-// Normaliza el valor de CLASE para mostrarlo prolijo
+// ---------- Normalización de valores ----------
 function normalizarClase(clase) {
   if (!clase) return '—';
   const c = String(clase).trim().toLowerCase();
@@ -20,6 +26,7 @@ function normalizarClase(clase) {
   return String(clase).trim();
 }
 
+// ---------- Popup ----------
 function construirPopupRuta(feature) {
   const p = feature.properties || {};
 
@@ -47,10 +54,24 @@ function construirPopupRuta(feature) {
   return html;
 }
 
+// ---------- Estilos por CLASE ----------
+function tipoVisualDeClase(clase) {
+  if (!clase) return 'natural';
+  const c = String(clase).trim().toLowerCase();
+
+  if (c === 'pavimentado') return 'pavimentado';
+  if (c === 'concesionado') return 'pavimentado';
+  if (c === 'mejorado') return 'mejorado';
+  if (c === 'en ciudad') return 'mejorado';
+  if (c === 'en construccion' || c === 'en construcción') return 'mejorado';
+  if (c === 'calzada natural') return 'natural';
+  return 'natural';
+}
+
 function estiloRutaHalo() {
   return {
     color: '#ffffff',
-    weight: 7,
+    weight: 8,
     opacity: 0.9,
     lineCap: 'round',
     lineJoin: 'round',
@@ -58,42 +79,97 @@ function estiloRutaHalo() {
   };
 }
 
-function estiloRutaLinea() {
-  return {
+function estiloRutaLinea(feature) {
+  const tipo = tipoVisualDeClase(feature.properties.CLASE);
+
+  const comunes = {
     color: '#000000',
-    weight: 3,
     opacity: 1.0,
     lineCap: 'round',
     lineJoin: 'round',
     fill: false
   };
+
+  if (tipo === 'pavimentado') {
+    return Object.assign({}, comunes, {
+      weight: 3.5,
+      dashArray: null
+    });
+  }
+  if (tipo === 'mejorado') {
+    return Object.assign({}, comunes, {
+      weight: 2.5,
+      dashArray: '6, 4'
+    });
+  }
+  // natural
+  return Object.assign({}, comunes, {
+    weight: 2,
+    dashArray: '2, 4'
+  });
 }
 
+// ---------- Interacción ----------
+function onEachRuta(feature, layer) {
+  const estiloOriginal = estiloRutaLinea(feature);
+
+  layer.bindPopup(construirPopupRuta(feature), {
+    maxWidth: 340,
+    minWidth: 240
+  });
+
+  layer.on('mouseover', function () {
+    this.setStyle({
+      weight: (estiloOriginal.weight || 3) + 1.5
+    });
+  });
+  layer.on('mouseout', function () {
+    this.setStyle({
+      weight: estiloOriginal.weight
+    });
+  });
+}
+
+// ---------- Filtro de features válidas ----------
 function rutaValida(feature) {
-  // Descartar features sin nombre ni jurisdicción (registros vacíos)
   const p = feature.properties || {};
   const nombre = (p.NOMBRE || '').trim();
   return nombre.length > 0;
 }
 
-function onEachRuta(feature, layer) {
-  layer.bindPopup(construirPopupRuta(feature), {
-    maxWidth: 340,
-    minWidth: 240
-  });
-  layer.on('mouseover', function () {
-    this.setStyle({ weight: 4 });
-  });
-  layer.on('mouseout', function () {
-    this.setStyle({ weight: 3 });
-  });
+// ---------- Leyenda ----------
+function construirLeyendaRutas() {
+  const leyenda = L.control({ position: 'bottomleft' });
+  leyenda.onAdd = function () {
+    const div = L.DomUtil.create('div', 'leyenda');
+    let html = '<div class="leyenda-titulo">Rutas</div>';
+
+    html += '<div class="leyenda-item">' +
+            '<svg width="24" height="14"><line x1="0" y1="7" x2="24" y2="7" ' +
+            'stroke="black" stroke-width="3.5"/></svg>' +
+            '<span>Pavimentado</span></div>';
+
+    html += '<div class="leyenda-item">' +
+            '<svg width="24" height="14"><line x1="0" y1="7" x2="24" y2="7" ' +
+            'stroke="black" stroke-width="2.5" stroke-dasharray="6,4"/></svg>' +
+            '<span>Mejorado</span></div>';
+
+    html += '<div class="leyenda-item">' +
+            '<svg width="24" height="14"><line x1="0" y1="7" x2="24" y2="7" ' +
+            'stroke="black" stroke-width="2" stroke-dasharray="2,4"/></svg>' +
+            '<span>Calzada natural</span></div>';
+
+    div.innerHTML = html;
+    return div;
+  };
+  return leyenda;
 }
 
+// ---------- Carga de la capa ----------
 fetch('datos/rutas/rutas.geojson')
   .then(function (r) { return r.json(); })
   .then(function (data) {
 
-    // Filtrar features inválidas al vuelo
     const featuresValidas = (data.features || []).filter(rutaValida);
     const dataFiltrada = {
       type: 'FeatureCollection',
@@ -103,19 +179,19 @@ fetch('datos/rutas/rutas.geojson')
     console.log('Rutas cargadas: ' + featuresValidas.length +
                 ' (de ' + (data.features || []).length + ' totales)');
 
-    // Capa 1: halo blanco
+    // Capa 1: halo blanco (debajo, no interactiva)
     window.capaRutasHalo = L.geoJSON(dataFiltrada, {
       style: estiloRutaHalo,
       interactive: false
     });
 
-    // Capa 2: línea negra (interactiva)
+    // Capa 2: línea negra con estilo según CLASE (arriba, interactiva)
     window.capaRutas = L.geoJSON(dataFiltrada, {
       style: estiloRutaLinea,
       onEachFeature: onEachRuta
     });
 
-    // Conectar al checkbox
+    // Conexión con el checkbox
     const chk = document.getElementById('chk-rutas');
     if (!chk) {
       console.warn('No se encontró el checkbox #chk-rutas');
@@ -127,9 +203,17 @@ fetch('datos/rutas/rutas.geojson')
         window.capaRutasHalo.addTo(map);
         window.capaRutas.addTo(map);
         window.capaRutas.bringToFront();
+
+        if (!window.controlLeyendaRutas) {
+          window.controlLeyendaRutas = construirLeyendaRutas();
+        }
+        window.controlLeyendaRutas.addTo(map);
       } else {
         map.removeLayer(window.capaRutasHalo);
         map.removeLayer(window.capaRutas);
+        if (window.controlLeyendaRutas) {
+          map.removeControl(window.controlLeyendaRutas);
+        }
       }
     });
   })
