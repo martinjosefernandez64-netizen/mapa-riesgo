@@ -1,5 +1,5 @@
 {
-  "fecha_emision": "2026-10-13T10:51:17.788092+00:00",
+  "fecha_emision": "2026-10-13T11:20:41.220604+00:00",
   "corrida_wrf": "2026-10-12 12 UTC",
   "variable": "Precipitación acumulada 72 h",
   "unidad": "mm",
@@ -15,9 +15,9 @@
   ],
   "zoom_min": 0,
   "zoom_max": 11,
-  "max_mm": 0.028014976531267166,
-  "max_mm_bbox": 0.15272021293640137,
-  "horas_procesadas": 1,
+  "max_mm": 0.6825080513954163,
+  "max_mm_bbox": 1.5881667137145996,
+  "horas_procesadas": 72,
   "escala": [
     {
       "min": 0,
@@ -81,5 +81,6 @@
     }
   ],
   "crs": "EPSG:4326",
-  "recortado_a": "Santa Fe"
+  "recortado_a": "Santa Fe",
+  "fuente": "WRFDETAR_01H_20261012_12_072.nc"
 }
