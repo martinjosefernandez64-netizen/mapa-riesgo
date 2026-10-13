@@ -2,19 +2,16 @@
 """
 Genera el pronóstico de precipitación acumulada 72 h del WRF-SMN.
 
+Fuente de datos:
+- Un único archivo: WRFDETAR_01H_YYYYMMDD_12_072.nc
+- Este archivo contiene la precipitación ACUMULADA total de 72 h
+  en la variable PP (1 sola banda).
+- Además contiene otras variables meteorológicas (T2, viento, humedad,
+  etc.) que se pueden usar para futuras capas.
+
 Salida:
 - Teselas XYZ (PNG con transparencia) recortadas al polígono de Santa Fe.
 - Metadata con la escala del SMN orientada al sector agropecuario.
-
-Cambios importantes:
-- La variable PP es precipitación acumulada cada 10 minutos.
-  Cada archivo del SMN contiene 6 timesteps de 10 min = 1 hora completa.
-  Para obtener la precipitación de cada hora se SUMAN las 6 bandas del
-  archivo, no se toma una sola.
-- El bbox de trabajo se calcula desde el polígono de Santa Fe.
-- El metadata.json declara los bounds REALES del ráster recortado.
-- NoData transparente (-9999) con la entrada al principio de la tabla.
-- Sin SystemExit(0) silencioso: los errores salen con código 1.
 """
 
 import os
@@ -26,7 +23,6 @@ import logging
 import datetime
 import tempfile
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import numpy as np
 import xarray as xr
@@ -58,10 +54,8 @@ MARGEN_BBOX = 0.1
 
 ZOOM_MIN, ZOOM_MAX = 0, 11
 
-MAX_WORKERS = 8
-
-# Solo necesitamos el último archivo: PP acumula desde t=0.
-HORAS = [72]
+# Sufijo del archivo acumulado total (72 h).
+SUFIJO_TOTAL = "072"
 
 NODATA_VALOR = -9999
 
@@ -97,7 +91,7 @@ def descargar_archivo(fs, ruta_s3, ruta_local, max_intentos=3):
     for intento in range(max_intentos):
         try:
             fs.get(ruta_s3, ruta_local)
-            if os.path.exists(ruta_local) and os.path.getsize(ruta_local) > 100_000:
+            if os.path.exists(ruta_local) and os.path.getsize(ruta_local) > 1_000_000:
                 return True
             if os.path.exists(ruta_local):
                 os.remove(ruta_local)
@@ -107,14 +101,12 @@ def descargar_archivo(fs, ruta_s3, ruta_local, max_intentos=3):
     return False
 
 
-def procesar_archivo_pp(ruta_nc, validar_unidades=False):
+def procesar_archivo_pp(ruta_nc):
     """
-    Lee la variable PP de un NetCDF del SMN y devuelve la precipitación
-    horaria del archivo.
+    Lee la variable PP del archivo 01H_072.nc del SMN.
 
-    IMPORTANTE: PP es precipitación acumulada cada 10 minutos. Cada
-    archivo contiene 6 timesteps de 10 min (una hora completa). Para
-    obtener la precipitación de esa hora, se SUMAN las 6 bandas.
+    Este archivo contiene el acumulado total de 72 h en 1 sola banda.
+    No hay que sumar nada: el valor ya es el total.
     """
     ds = xr.open_dataset(ruta_nc, engine="netcdf4")
 
@@ -130,24 +122,14 @@ def procesar_archivo_pp(ruta_nc, validar_unidades=False):
         pp = ds[candidatos[0]]
         log.warning("  Variable PP no encontrada, usando %s", candidatos[0])
 
-    if validar_unidades:
-        unidades = pp.attrs.get("units", "").lower()
-        validas = ("mm", "millimeter", "kg", "precip")
-        if unidades and not any(u in unidades for u in validas):
-            log.warning("  Unidades de PP inesperadas: %r", unidades)
+    log.info("  PP attrs: %s", dict(pp.attrs))
+    log.info("  PP shape original: %s", pp.shape)
 
     valores = pp.values
-
+    # El archivo tiene 1 sola banda (acumulado total 72 h).
     if valores.ndim == 3:
-        # PP es precipitación ACUMULADA desde t=0 de la corrida.
-        # La última banda del archivo es el acumulado total hasta
-        # el final de la ventana cubierta por ese archivo.
-        valores = valores[-1]
-    elif valores.ndim == 2:
-        # Archivo con una sola capa (ej. pp_072.nc con 1 banda).
-        valores = np.nan_to_num(valores, nan=0.0)
-
-    valores = valores.astype(np.float32)
+        valores = valores[0]
+    valores = np.nan_to_num(valores, nan=0.0).astype(np.float32)
     ds.close()
     return valores
 
@@ -204,7 +186,7 @@ def main():
             dia = fecha.strftime("%d")
 
             ruta_test = (f"{BUCKET}/DATA/WRF/DET/{anio}/{mes}/{dia}/12/"
-                         f"WRFDETAR_10M_{anio}{mes}{dia}_12_072.nc")
+                         f"WRFDETAR_01H_{anio}{mes}{dia}_12_{SUFIJO_TOTAL}.nc")
             try:
                 fs.info(ruta_test)
                 corrida = (anio, mes, dia)
@@ -221,63 +203,36 @@ def main():
         anio, mes, dia = corrida
 
         # ------------------------------------------------
-        # 2. Descarga paralela
+        # 2. Descarga del archivo 01H_072.nc
         # ------------------------------------------------
         log.info("=" * 60)
-        log.info("DESCARGA PARALELA DE 72 ARCHIVOS (workers=%d)", MAX_WORKERS)
+        log.info("DESCARGANDO EL ARCHIVO DEL ACUMULADO TOTAL")
         log.info("=" * 60)
 
-        archivos_locales = {}
+        ruta_s3 = (f"{BUCKET}/DATA/WRF/DET/{anio}/{mes}/{dia}/12/"
+                   f"WRFDETAR_01H_{anio}{mes}{dia}_12_{SUFIJO_TOTAL}.nc")
+        ruta_local = os.path.join(tmp, "pp_01h_072.nc")
+
         t_inicio = time.time()
-
-        def descargar_hora(hora):
-            ruta_s3 = (f"{BUCKET}/DATA/WRF/DET/{anio}/{mes}/{dia}/12/"
-                       f"WRFDETAR_10M_{anio}{mes}{dia}_12_{hora:03d}.nc")
-            ruta_local = os.path.join(tmp, f"pp_{hora:03d}.nc")
-            exito = descargar_archivo(fs, ruta_s3, ruta_local)
-            return hora, ruta_local if exito else None
-
-        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-            futuros = {executor.submit(descargar_hora, h): h for h in HORAS}
-            completados = 0
-            for futuro in as_completed(futuros):
-                hora, ruta = futuro.result()
-                if ruta:
-                    archivos_locales[hora] = ruta
-                completados += 1
-                if completados % 12 == 0:
-                    log.info("  Descargados %d/%d", completados, len(HORAS))
-
+        exito = descargar_archivo(fs, ruta_s3, ruta_local)
         t_fin = time.time()
-        log.info("  Descargados %d/%d archivos en %.1f s",
-                 len(archivos_locales), len(HORAS), t_fin - t_inicio)
 
-        if len(archivos_locales) < len(HORAS) * 0.9:
-            log.error("Menos del 90%% de archivos descargados. Se aborta.")
+        if not exito:
+            log.error("No se pudo descargar el archivo %s. Se aborta.", ruta_s3)
             sys.exit(1)
 
+        log.info("  Descargado en %.1f s (%.1f MB)",
+                 t_fin - t_inicio,
+                 os.path.getsize(ruta_local) / 1024 / 1024)
+
         # ------------------------------------------------
-        # 3. Estructura del primer archivo
+        # 3. Leer el acumulado total
         # ------------------------------------------------
         log.info("=" * 60)
-        log.info("LEYENDO ESTRUCTURA DEL PRIMER ARCHIVO")
+        log.info("LEYENDO EL ACUMULADO TOTAL")
         log.info("=" * 60)
 
-        primera_hora = min(archivos_locales.keys())
-        ds_ref = xr.open_dataset(archivos_locales[primera_hora], engine="netcdf4")
-
-        if "PP" in ds_ref.data_vars:
-            log.info("  PP attrs: %s", dict(ds_ref["PP"].attrs))
-            muestra = ds_ref["PP"]
-            log.info("  PP shape original: %s", muestra.shape)
-            if muestra.ndim == 3:
-                log.info("  PP timesteps por archivo: %d", muestra.shape[0])
-                log.info("  PP rango banda 1: %.4f a %.4f",
-                         float(muestra.isel(time=0).min()),
-                         float(muestra.isel(time=0).max()))
-                suma_hora = np.nansum(muestra.values, axis=0)
-                log.info("  PP suma de 6 bandas (1 hora): max=%.4f",
-                         float(np.nanmax(suma_hora)))
+        ds_ref = xr.open_dataset(ruta_local, engine="netcdf4")
 
         lat2d = ds_ref["lat"].values
         lon2d = ds_ref["lon"].values
@@ -301,28 +256,19 @@ def main():
         ds_ref.close()
 
         # ------------------------------------------------
-        # 4. Leer el archivo de la última hora (acumulado total)
+        # 4. Leer PP (acumulado total de 72 h)
         # ------------------------------------------------
-        # PP es acumulada desde t=0 de la corrida. Cada archivo
-        # contiene el acumulado hasta el final de su ventana. El
-        # archivo _072.nc tiene el acumulado total de 72 h.
         log.info("=" * 60)
-        log.info("LEYENDO EL ACUMULADO TOTAL")
+        log.info("LEYENDO LA VARIABLE PP")
         log.info("=" * 60)
 
-        hora_final = max(archivos_locales.keys())
-        log.info("  Archivo de la hora %d (acumulado total)", hora_final)
-
-        acumulado = procesar_archivo_pp(archivos_locales[hora_final])
-
-        # Borrar todos los archivos descargados (ya no hacen falta).
-        for ruta in archivos_locales.values():
-            if os.path.exists(ruta):
-                os.remove(ruta)
-
-        horas_procesadas = len(archivos_locales)
+        acumulado = procesar_archivo_pp(ruta_local)
         log.info("  Máximo acumulado (grilla WRF cruda): %.2f mm",
                  float(np.nanmax(acumulado)))
+        log.info("  Media acumulada (grilla WRF cruda):  %.4f mm",
+                 float(np.nanmean(acumulado)))
+
+        os.remove(ruta_local)
 
         # ------------------------------------------------
         # 5. Interpolación a grilla regular dentro del bbox
@@ -482,8 +428,6 @@ def main():
         log.info("  Bounds reales del ráster: lon [%.4f, %.4f], lat [%.4f, %.4f]",
                  b[0], b[2], b[1], b[3])
 
-        # Máximo REAL dentro del polígono (no en todo el bbox).
-        # validos_final ya está calculado en el paso 6c.
         max_dentro_poligono = float(np.max(validos_final)) if len(validos_final) > 0 else 0.0
 
         log.info("  Máximo dentro del polígono: %.2f mm", max_dentro_poligono)
@@ -516,10 +460,11 @@ def main():
             "zoom_max": ZOOM_MAX,
             "max_mm": max_dentro_poligono,
             "max_mm_bbox": float(np.nanmax(acumulado_interp)),
-            "horas_procesadas": horas_procesadas,
+            "horas_procesadas": 72,
             "escala": escala_metadata,
             "crs": "EPSG:4326",
             "recortado_a": "Santa Fe",
+            "fuente": f"WRFDETAR_01H_{anio}{mes}{dia}_12_{SUFIJO_TOTAL}.nc",
         }
 
         ruta_metadata = os.path.join(DIR_METADATA, "metadata.json")
