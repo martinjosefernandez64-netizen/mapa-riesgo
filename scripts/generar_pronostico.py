@@ -3,11 +3,10 @@
 Genera el pronóstico de precipitación acumulada 72 h del WRF-SMN.
 
 Fuente de datos:
-- Un único archivo: WRFDETAR_01H_YYYYMMDD_12_072.nc
-- Este archivo contiene la precipitación ACUMULADA total de 72 h
+- Un único archivo: WRFDETAR_01H_YYYYMMDD_HH_072.nc
+- Contiene la precipitación ACUMULADA TOTAL desde t=0 hasta t=72h
   en la variable PP (1 sola banda).
-- Además contiene otras variables meteorológicas (T2, viento, humedad,
-  etc.) que se pueden usar para futuras capas.
+- Se busca la corrida más reciente disponible entre 12, 06, 00 y 18 UTC.
 
 Salida:
 - Teselas XYZ (PNG con transparencia) recortadas al polígono de Santa Fe.
@@ -49,22 +48,20 @@ DIR_TESELAS = "tiles_pronostico"
 DIR_METADATA = "datos/pronostico"
 RUTA_POLIGONO = "datos/santa_fe.geojson"
 
-# Margen (en grados) alrededor del bbox del polígono.
 MARGEN_BBOX = 0.1
 
 ZOOM_MIN, ZOOM_MAX = 0, 11
+
+# Horas de corrida en orden de preferencia (la más reciente primero).
+HORAS_CORRIDA = ["12", "06", "00", "18"]
 
 # Sufijo del archivo acumulado total (72 h).
 SUFIJO_TOTAL = "072"
 
 NODATA_VALOR = -9999
 
-# Resolución de la grilla destino (píxeles por grado).
 N_PIXELES_POR_GRADO = 60
 
-# ------------------------------------------------------------
-# ESCALA DE COLORES
-# ------------------------------------------------------------
 ESCALA = [
     (0,   0.1, "#f7f4e9"),
     (0.1, 1,   "#ffffcc"),
@@ -126,7 +123,6 @@ def procesar_archivo_pp(ruta_nc):
     log.info("  PP shape original: %s", pp.shape)
 
     valores = pp.values
-    # El archivo tiene 1 sola banda (acumulado total 72 h).
     if valores.ndim == 3:
         valores = valores[0]
     valores = np.nan_to_num(valores, nan=0.0).astype(np.float32)
@@ -138,9 +134,6 @@ def procesar_archivo_pp(ruta_nc):
 # PROCESAMIENTO PRINCIPAL
 # ============================================================
 def main():
-    # ----------------------------------------------------
-    # 0. Leer el polígono y calcular el bbox de trabajo
-    # ----------------------------------------------------
     log.info("=" * 60)
     log.info("LEYENDO POLÍGONO DE SANTA FE")
     log.info("=" * 60)
@@ -185,22 +178,27 @@ def main():
             mes = fecha.strftime("%m")
             dia = fecha.strftime("%d")
 
-            ruta_test = (f"{BUCKET}/DATA/WRF/DET/{anio}/{mes}/{dia}/12/"
-                         f"WRFDETAR_01H_{anio}{mes}{dia}_12_{SUFIJO_TOTAL}.nc")
-            try:
-                fs.info(ruta_test)
-                corrida = (anio, mes, dia)
-                log.info("  Corrida encontrada: %s-%s-%s 12 UTC",
-                         anio, mes, dia)
+            for hora_corrida in HORAS_CORRIDA:
+                ruta_test = (f"{BUCKET}/DATA/WRF/DET/{anio}/{mes}/{dia}/{hora_corrida}/"
+                             f"WRFDETAR_01H_{anio}{mes}{dia}_{hora_corrida}_{SUFIJO_TOTAL}.nc")
+                try:
+                    fs.info(ruta_test)
+                    corrida = (anio, mes, dia, hora_corrida)
+                    log.info("  Corrida encontrada: %s-%s-%s %s UTC",
+                             anio, mes, dia, hora_corrida)
+                    break
+                except Exception:
+                    log.info("  Corrida %s-%s-%s %s UTC no disponible",
+                             anio, mes, dia, hora_corrida)
+
+            if corrida is not None:
                 break
-            except Exception:
-                log.info("  Corrida %s-%s-%s no disponible", anio, mes, dia)
 
         if corrida is None:
             log.error("No hay corridas disponibles. Se aborta.")
             sys.exit(1)
 
-        anio, mes, dia = corrida
+        anio, mes, dia, hora_corrida = corrida
 
         # ------------------------------------------------
         # 2. Descarga del archivo 01H_072.nc
@@ -209,8 +207,8 @@ def main():
         log.info("DESCARGANDO EL ARCHIVO DEL ACUMULADO TOTAL")
         log.info("=" * 60)
 
-        ruta_s3 = (f"{BUCKET}/DATA/WRF/DET/{anio}/{mes}/{dia}/12/"
-                   f"WRFDETAR_01H_{anio}{mes}{dia}_12_{SUFIJO_TOTAL}.nc")
+        ruta_s3 = (f"{BUCKET}/DATA/WRF/DET/{anio}/{mes}/{dia}/{hora_corrida}/"
+                   f"WRFDETAR_01H_{anio}{mes}{dia}_{hora_corrida}_{SUFIJO_TOTAL}.nc")
         ruta_local = os.path.join(tmp, "pp_01h_072.nc")
 
         t_inicio = time.time()
@@ -271,7 +269,7 @@ def main():
         os.remove(ruta_local)
 
         # ------------------------------------------------
-        # 5. Interpolación a grilla regular dentro del bbox
+        # 5. Interpolación
         # ------------------------------------------------
         log.info("=" * 60)
         log.info("INTERPOLANDO A CUADRÍCULA REGULAR")
@@ -418,7 +416,7 @@ def main():
         log.info("  Teselas generadas en %s/", DIR_TESELAS)
 
         # ------------------------------------------------
-        # 9. Metadata con bounds REALES
+        # 9. Metadata
         # ------------------------------------------------
         os.makedirs(DIR_METADATA, exist_ok=True)
 
@@ -452,7 +450,7 @@ def main():
         metadata = {
             "fecha_emision": datetime.datetime.now(
                 datetime.timezone.utc).isoformat(),
-            "corrida_wrf": f"{anio}-{mes}-{dia} 12 UTC",
+            "corrida_wrf": f"{anio}-{mes}-{dia} {hora_corrida} UTC",
             "variable": "Precipitación acumulada 72 h",
             "unidad": "mm",
             "bounds": bounds_reales,
@@ -464,7 +462,7 @@ def main():
             "escala": escala_metadata,
             "crs": "EPSG:4326",
             "recortado_a": "Santa Fe",
-            "fuente": f"WRFDETAR_01H_{anio}{mes}{dia}_12_{SUFIJO_TOTAL}.nc",
+            "fuente": f"WRFDETAR_01H_{anio}{mes}{dia}_{hora_corrida}_{SUFIJO_TOTAL}.nc",
         }
 
         ruta_metadata = os.path.join(DIR_METADATA, "metadata.json")
