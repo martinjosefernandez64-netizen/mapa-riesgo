@@ -60,7 +60,8 @@ ZOOM_MIN, ZOOM_MAX = 0, 11
 
 MAX_WORKERS = 8
 
-HORAS = list(range(1, 73))
+# Solo necesitamos el último archivo: PP acumula desde t=0.
+HORAS = [72]
 
 NODATA_VALOR = -9999
 
@@ -138,8 +139,10 @@ def procesar_archivo_pp(ruta_nc, validar_unidades=False):
     valores = pp.values
 
     if valores.ndim == 3:
-        # Sumar los 6 timesteps de 10 min para obtener la hora completa.
-        valores = np.nansum(valores, axis=0)
+        # PP es precipitación ACUMULADA desde t=0 de la corrida.
+        # La última banda del archivo es el acumulado total hasta
+        # el final de la ventana cubierta por ese archivo.
+        valores = valores[-1]
     elif valores.ndim == 2:
         # Archivo con una sola capa (ej. pp_072.nc con 1 banda).
         valores = np.nan_to_num(valores, nan=0.0)
@@ -298,38 +301,28 @@ def main():
         ds_ref.close()
 
         # ------------------------------------------------
-        # 4. Acumulación en streaming
+        # 4. Leer el archivo de la última hora (acumulado total)
         # ------------------------------------------------
+        # PP es acumulada desde t=0 de la corrida. Cada archivo
+        # contiene el acumulado hasta el final de su ventana. El
+        # archivo _072.nc tiene el acumulado total de 72 h.
         log.info("=" * 60)
-        log.info("ACUMULANDO PRECIPITACIÓN EN STREAMING")
+        log.info("LEYENDO EL ACUMULADO TOTAL")
         log.info("=" * 60)
 
-        acumulado = np.zeros(lat2d.shape, dtype=np.float32)
-        horas_procesadas = 0
+        hora_final = max(archivos_locales.keys())
+        log.info("  Archivo de la hora %d (acumulado total)", hora_final)
 
-        for hora in sorted(archivos_locales.keys()):
-            ruta_local = archivos_locales[hora]
-            try:
-                # Suma las 6 bandas de 10 min para obtener la hora completa.
-                capa = procesar_archivo_pp(ruta_local)
-                if capa.shape != acumulado.shape:
-                    log.warning("  Hora %d: forma inesperada %s, se ignora",
-                                hora, capa.shape)
-                    os.remove(ruta_local)
-                    continue
-                acumulado += np.nan_to_num(capa, nan=0.0)
-                horas_procesadas += 1
-                os.remove(ruta_local)
-                if horas_procesadas % 12 == 0:
-                    log.info("  Procesadas %d horas | máx acumulado: %.2f mm",
-                             horas_procesadas, float(np.nanmax(acumulado)))
-            except Exception as e:
-                log.warning("  Hora %d: error %s", hora, e)
-                if os.path.exists(ruta_local):
-                    os.remove(ruta_local)
+        acumulado = procesar_archivo_pp(archivos_locales[hora_final])
 
-        log.info("  Total procesadas: %d horas", horas_procesadas)
-        log.info("  Máximo acumulado: %.2f mm", float(np.nanmax(acumulado)))
+        # Borrar todos los archivos descargados (ya no hacen falta).
+        for ruta in archivos_locales.values():
+            if os.path.exists(ruta):
+                os.remove(ruta)
+
+        horas_procesadas = len(archivos_locales)
+        log.info("  Máximo acumulado (grilla WRF cruda): %.2f mm",
+                 float(np.nanmax(acumulado)))
 
         # ------------------------------------------------
         # 5. Interpolación a grilla regular dentro del bbox
