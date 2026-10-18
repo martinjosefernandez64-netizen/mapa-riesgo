@@ -1,6 +1,6 @@
 {
-  "fecha_emision": "2026-10-17T20:13:53.697005+00:00",
-  "corrida_wrf": "2026-10-17 12 UTC",
+  "fecha_emision": "2026-10-18T11:52:52.445164+00:00",
+  "corrida_wrf": "2026-10-18 06 UTC",
   "variable": "Precipitación acumulada 72 h",
   "unidad": "mm",
   "bounds": [
@@ -82,5 +82,5 @@
   ],
   "crs": "EPSG:4326",
   "recortado_a": "Santa Fe",
-  "fuente": "WRFDETAR_01H_20261017_12_072.nc"
+  "fuente": "WRFDETAR_01H_20261018_06_072.nc"
 }
