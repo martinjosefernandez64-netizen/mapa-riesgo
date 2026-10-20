@@ -1,161 +1,166 @@
-# Mapa de Riesgo - Santa Fe
+# Mapa de Riesgo y Pronóstico - Santa Fe
 
-Visor interactivo con dos capas independientes sobre la provincia de Santa Fe:
+Visor web interactivo desarrollado con Leaflet para la provincia de Santa Fe. Permite visualizar tres capas de información geoespacial de forma independiente:
 
-1. **Nivel de riesgo por distrito** — clasificación de municipios y comunas según la superficie con riesgo alto y crítico.
-2. **Pronóstico de precipitación acumulada 72 h** — salida del modelo WRF-SMN, actualizada automáticamente dos veces por día.
-
-**Visor publicado:** https://martinjosefernandez64-netizen.github.io/mapa-riesgo/
-
----
+1. **Nivel de riesgo por distrito** (365 distritos).
+2. **Pronóstico de precipitación acumulada** (WRF-SMN).
+3. **Red vial provincial** (rutas).
 
 ## Estructura del repositorio
+
+```text
 mapa-riesgo/
 ├── .github/workflows/
-│ └── actualizar_pronostico.yml Workflow de GitHub Actions
+│   └── actualizar_pronostico.yml  # Workflow de GitHub Actions
 ├── datos/
-│ ├── santa_fe.geojson Polígono de la provincia
-│ ├── pronostico/
-│ │ └── metadata.json Metadata del pronóstico vigente
-│ └── riesgo/
-│ └── distritos_mediana.geojson Distritos con nivel de riesgo
+│   ├── santa_fe.geojson           # Polígono de la provincia
+│   ├── pronostico/
+│   │   └── metadata.json          # Metadata del pronóstico vigente
+│   ├── riesgo/
+│   │   └── distritos_mediana.geojson # Distritos con nivel de riesgo
+│   └── rutas/
+│       └── rutas.geojson          # Trazado de rutas provinciales
 ├── imagenes/
-│ └── {DISTRITO}.jpg 365 imágenes (una por distrito)
+│   └── {DISTRITO}.jpg             # 365 imágenes (una por distrito)
 ├── scripts/
-│ └── generar_pronostico.py Pipeline de pronóstico
-├── tiles_pronostico/{z}/{x}/{y}.png Teselas XYZ del pronóstico
-├── index.html Estructura del visor
-├── app.js Lógica de Leaflet
-├── style.css Estilos
+│   └── generar_pronostico.py      # Pipeline de pronóstico
+├── tiles_pronostico/
+│   ├── total/{z}/{x}/{y}.png      # Teselas acumulado 72h
+│   ├── dia1/{z}/{x}/{y}.png       # Teselas día 1 (0-24h)
+│   ├── dia2/{z}/{x}/{y}.png       # Teselas día 2 (24-48h)
+│   └── dia3/{z}/{x}/{y}.png       # Teselas día 3 (48-72h)
+├── index.html                     # Estructura del visor
+├── app.js                         # Lógica de Leaflet (Riesgo y Pronóstico)
+├── rutas.js                       # Lógica de Leaflet (Red vial)
+├── style.css                      # Estilos del visor
 ├── requirements.txt
 └── README.md
+Capa 1: Nivel de riesgo por distrito
+Descripción
+Cada uno de los 365 distritos (municipios y comunas) de Santa Fe tiene asignada una clase de riesgo (1 a 5) calculada a partir de la superficie con riesgo alto y crítico dentro de cada distrito.
 
+Campos del GeoJSON distritos_mediana.geojson
+Campo	Tipo	Descripción
+DISTRITO	String	Código único de 4 caracteres (ej. 0727)
+NOMBRE1	String	Nombre del distrito
+riesgo_median	Double	Mediana del riesgo (escala 1–5)
+riesgo_ponderado	Double	Promedio ponderado por superficie (1.0–5.0)
+pct_n4_n5	Double	Porcentaje de superficie con riesgo alto + crítico
+riesgo_alto_clase	Integer	Clase de riesgo (1–5)
+ha	Double	Superficie total del distrito (hectáreas)
+b12_ha	Double	Superficie con riesgo muy bajo + bajo (ha)
+n3_ha	Double	Superficie con riesgo moderado (ha)
+n4_ha	Double	Superficie con riesgo alto (ha)
+n5_ha	Double	Superficie con riesgo crítico (ha)
+Escala de riesgo_alto_clase
+Basada en pct_n4_n5 (porcentaje de superficie con riesgo alto o crítico):
 
----
+Clase	Etiqueta	Rango de pct_n4_n5	Color
+1	Riesgo Muy Bajo	0%	#d9d9d9
+2	Riesgo Bajo / Monitoreo	0 – 0.05%	#fdf2c6
+3	Riesgo Moderado	0.05 – 0.5%	#e89925
+4	Riesgo Alto	0.5 – 2%	#c14a1c
+5	Riesgo Crítico	> 2%	#8b1e1e
+Actualización
+La capa de riesgo no se actualiza automáticamente. Se regenera manualmente cuando cambia el ráster de riesgo fuente (habitualmente una vez por mes después del día 10):
 
-## Capa de nivel de riesgo por distrito
+En QGIS, cargar distritos_simp y el ráster de riesgo del mes.
 
-### Descripción
+Ejecutar el script Poligonos.py → genera distritos_mediana.geojson.
 
-Cada uno de los **365 distritos** (municipios y comunas) de Santa Fe tiene asignada una clase de riesgo (1 a 5) calculada a partir de la superficie con riesgo alto y crítico dentro de cada distrito.
+Ejecutar el script imagenes.py → genera las 365 imágenes.
 
-### Campos del GeoJSON `distritos_mediana.geojson`
+Subir a GitHub: distritos_mediana.geojson a datos/riesgo/ y las imágenes a imagenes/.
 
-| Campo | Tipo | Descripción |
-|-------|------|-------------|
-| `DISTRITO` | String | Código único de 4 caracteres (ej. `0727`) |
-| `NOMBRE1` | String | Nombre del distrito |
-| `riesgo_median` | Double | Mediana del riesgo (escala 1–5) |
-| `riesgo_ponderado` | Double | Promedio ponderado por superficie (1.0–5.0) |
-| `pct_n4_n5` | Double | Porcentaje de superficie con riesgo alto + crítico |
-| `riesgo_alto_clase` | Integer | Clase de riesgo (1–5) |
-| `ha` | Double | Superficie total del distrito (hectáreas) |
-| `b12_ha` | Double | Superficie con riesgo muy bajo + bajo (ha) |
-| `n3_ha` | Double | Superficie con riesgo moderado (ha) |
-| `n4_ha` | Double | Superficie con riesgo alto (ha) |
-| `n5_ha` | Double | Superficie con riesgo crítico (ha) |
+Capa 2: Pronóstico de precipitación
+Descripción
+Precipitación acumulada según el modelo WRF-SMN (Servicio Meteorológico Nacional), recortada a la provincia de Santa Fe y publicada como 4 capas de teselas XYZ:
 
-### Escala de `riesgo_alto_clase`
+Total 72h (suma de los 3 días).
 
-La clasificación se basa en `pct_n4_n5` (porcentaje de la superficie del distrito con riesgo alto o crítico):
+Día 1 (0–24h).
 
-| Clase | Etiqueta | Rango de `pct_n4_n5` | Color |
-|-------|----------|----------------------|-------|
-| 1 | Riesgo Muy Bajo | 0% | `#d9d9d9` |
-| 2 | Riesgo Bajo / Monitoreo | 0 – 0.05% | `#fdf2c6` |
-| 3 | Riesgo Moderado | 0.05 – 0.5% | `#e89925` |
-| 4 | Riesgo Alto | 0.5 – 2% | `#c14a1c` |
-| 5 | Riesgo Crítico | > 2% | `#8b1e1e` |
+Día 2 (24–48h).
 
-Los colores y etiquetas coinciden con los del ráster de riesgo original.
+Día 3 (48–72h).
 
-### Imágenes por distrito
+Fuente de datos
+Modelo: WRF-SMN (WRF Deterministic, resolución 4 km).
 
-Cada distrito tiene una imagen JPG de 1000×1000 px en `imagenes/{DISTRITO}.jpg` que muestra el distrito centrado sobre el ráster de riesgo, con los bordes de todos los distritos superpuestos. La imagen se abre en una nueva pestaña al hacer clic desde el popup del visor.
+Bucket público: s3://smn-ar-wrf/ (sin credenciales).
 
-### Actualización
+Frecuencia: dos corridas diarias (00 UTC y 12 UTC).
 
-La capa de riesgo **no se actualiza automáticamente**. Se regenera manualmente cuando cambia el ráster de riesgo fuente (habitualmente una vez por mes después del día 10):
+Variable: PP (precipitación acumulada).
 
-1. En QGIS, cargar `distritos_simp` y el ráster de riesgo del mes.
-2. Ejecutar el script `Poligonos.py` → genera `distritos_mediana.geojson`.
-3. Ejecutar el script `imagenes.py` → genera las 365 imágenes.
-4. Subir a GitHub:
-   - `distritos_mediana.geojson` → `datos/riesgo/`
-   - Las 365 imágenes → `imagenes/`
+Actualización automática
+El workflow .github/workflows/actualizar_pronostico.yml corre en dos horarios:
 
----
+04:00 ART (07:00 UTC) — corrida 00 UTC del día anterior.
 
-## Capa de pronóstico de precipitación
+15:00 ART (18:00 UTC) — corrida 12 UTC del día.
 
-### Descripción
+También se puede disparar manualmente desde la pestaña Actions del repositorio (workflow_dispatch).
 
-Precipitación acumulada a 72 horas según el modelo **WRF-SMN** (Servicio Meteorológico Nacional), recortada a la provincia de Santa Fe y publicada como teselas XYZ.
+Metadata del pronóstico
+El archivo datos/pronostico/metadata.json contiene:
 
-### Fuente de datos
+fecha_emision: fecha y hora ISO 8601 UTC.
 
-- **Modelo:** WRF-SMN (WRF Deterministic, resolución 4 km)
-- **Bucket público:** `s3://smn-ar-wrf/` (sin credenciales)
-- **Frecuencia:** dos corridas diarias (00 UTC y 12 UTC)
-- **Variable:** `PP` (precipitación acumulada cada 10 minutos)
+corrida_wrf: descripción legible de la corrida.
 
-### Actualización automática
+bounds: extensión geográfica del ráster.
 
-El workflow `.github/workflows/actualizar_pronostico.yml` corre en dos horarios:
+zoom_max: nivel máximo de zoom de las teselas generadas.
 
-- **04:00 ART** (07:00 UTC) — corrida 00 UTC del día anterior
-- **15:00 ART** (18:00 UTC) — corrida 12 UTC del día
+capas: objeto con las 4 subcapas (total, dia1, dia2, dia3), indicando su label y max_mm respectivo.
 
-También se puede disparar manualmente desde la pestaña **Actions** del repositorio (`workflow_dispatch`).
+max_mm: máximo de precipitación total en 72h dentro del polígono.
 
-### Metadata del pronóstico
+escala: 10 rangos de precipitación con colores y etiquetas.
 
-El archivo `datos/pronostico/metadata.json` contiene:
+Capa 3: Red vial (Rutas)
+Descripción
+Capa vectorial que muestra el trazado de las rutas provinciales, clasificadas visualmente según su tipo de calzada.
 
-- `fecha_emision` — fecha y hora ISO 8601 UTC
-- `corrida_wrf` — descripción legible de la corrida
-- `bounds` — extensión geográfica del ráster
-- `max_mm` — máximo de precipitación dentro del polígono de Santa Fe
-- `escala` — 10 rangos de precipitación con colores y etiquetas
+Estilos
+Pavimentado / Concesionado: Línea continua gruesa.
 
-El visor lee este archivo para mostrar el aviso de vigencia y construir la leyenda dinámicamente.
+Mejorado / En ciudad / En construcción: Línea discontinua.
 
----
+Calzada natural: Línea punteada fina.
 
-## Cómo usar el visor
+Incluye un "halo" blanco debajo de cada línea para mejorar la visibilidad sobre el mapa base y sobre la capa de riesgo.
 
-### Capas disponibles
+Cómo usar el visor
+Disposición de las leyendas
+Para evitar que se superpongan con el panel de capas (esquina superior derecha), las leyendas se han distribuido de la siguiente manera:
 
-- **Nivel de riesgo** (activa por defecto): distritos coloreados según su clase de riesgo, con opacidad al 50%.
-- **Pronóstico 72 h** (desactivada por defecto): teselas del pronóstico de precipitación con opacidad al 75%.
+Arriba a la izquierda: Leyenda de Nivel de riesgo y Leyenda de Precipitación (se apilan verticalmente según qué capas estén activas).
 
-Ambas capas se pueden activar y desactivar de forma independiente desde el panel **Capas** (arriba a la derecha).
+Abajo a la izquierda: Leyenda de Rutas.
 
-### Interacción
+Arriba a la derecha: Panel de control de capas y aviso de vigencia.
 
-- **Clic en un distrito:** abre un popup con el nombre, la imagen, los datos de riesgo y las superficies por clase.
-- **Clic en la imagen del popup:** abre la imagen en tamaño completo en una nueva pestaña.
-- **Hover sobre un distrito:** resalta el borde.
+Interacción
+Clic en un distrito: Abre un popup con su nombre, la imagen satelital del ráster, datos de riesgo y superficies por clase.
 
-### Leyendas
+Clic en la imagen del popup: Abre la imagen en tamaño completo en una nueva pestaña.
 
-- **Nivel de riesgo:** se muestra abajo a la derecha cuando la capa de distritos está activa.
-- **Precipitación:** se muestra abajo a la derecha cuando la capa de pronóstico está activa.
+Hover sobre un distrito: Resalta el borde.
 
-Si ambas capas están activas, las dos leyendas se apilan en la esquina inferior derecha.
+Clic en una ruta: Muestra el nombre, jurisdicción, clase y observaciones.
 
----
+Ejecutar el pipeline localmente
+Requisitos
+Python 3.10+
 
-## Ejecutar el pipeline localmente
+GDAL 3.6+
 
-### Requisitos
+Dependencias de requirements.txt
 
-- Python 3.10+
-- GDAL 3.6+
-- Las dependencias de `requirements.txt`
-
-### Pronóstico
-
-```bash
+Pronóstico
+bash
 pip install -r requirements.txt
 python scripts/generar_pronostico.py
+El script descargará los datos del bucket de SMN, generará las 4 capas de teselas en tiles_pronostico/ y actualizará metadata.json.
