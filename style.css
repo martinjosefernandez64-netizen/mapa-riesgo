@@ -1,6 +1,12 @@
+/* ============================================================
+   ESTILOS GENERALES
+   ============================================================ */
 html, body { margin: 0; padding: 0; height: 100%; font-family: sans-serif; }
 #map { height: 100vh; width: 100%; }
 
+/* ============================================================
+   PANEL DE CONTROL (Arriba a la derecha)
+   ============================================================ */
 #panel {
   position: absolute; top: 10px; right: 10px; z-index: 1000;
   background: white; padding: 12px; border-radius: 8px;
@@ -14,6 +20,9 @@ html, body { margin: 0; padding: 0; height: 100%; font-family: sans-serif; }
 .capa-grupo:last-of-type { border-bottom: none; }
 .capa-titulo { font-weight: bold; margin-bottom: 4px; font-size: 13px; color: #333; }
 
+/* ============================================================
+   AVISOS DE VIGENCIA
+   ============================================================ */
 .aviso {
   margin-top: 8px; padding: 8px 10px; border-radius: 6px;
   background: #eef6fc; border-left: 4px solid #2171b5;
@@ -24,6 +33,21 @@ html, body { margin: 0; padding: 0; height: 100%; font-family: sans-serif; }
 .aviso-linea { margin: 2px 0; }
 .aviso-linea strong { color: #333; }
 
+/* ============================================================
+   CONTENEDOR DE LEYENDAS (Abajo a la derecha)
+   ============================================================ */
+.contenedor-leyendas {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: calc(100vh - 40px);
+  overflow-y: auto;
+  pointer-events: auto;
+}
+
+/* ============================================================
+   ESTILO BASE DE LEYENDAS (Riesgo, Precipitación, Rutas)
+   ============================================================ */
 .leyenda {
   background: white; padding: 10px 12px; border-radius: 6px;
   box-shadow: 0 2px 8px rgba(0,0,0,0.25);
@@ -40,19 +64,19 @@ html, body { margin: 0; padding: 0; height: 100%; font-family: sans-serif; }
   border-top: 1px solid #ddd; font-size: 11px; color: #555;
 }
 
-/* Popup de distritos */
-.popup-distrito h3 { margin: 0 0 6px 0; font-size: 15px; }
+/* ============================================================
+   POPUPS
+   ============================================================ */
+.popup-distrito h3, .popup-ruta h3 { margin: 0 0 6px 0; font-size: 15px; }
 .popup-imagen {
   width: 100%; max-width: 300px; height: auto;
   border-radius: 4px; display: block; margin-bottom: 8px;
 }
 .popup-datos { font-size: 12px; margin-bottom: 8px; }
 .popup-datos .linea { margin: 2px 0; }
+
 .popup-superficies { font-size: 12px; }
-.sup-item {
-  display: flex; justify-content: space-between;
-  align-items: center; margin: 2px 0;
-}
+.sup-item { display: flex; justify-content: space-between; align-items: center; margin: 2px 0; }
 .sup-color {
   display: inline-block; width: 12px; height: 12px;
   margin-right: 6px; border: 1px solid rgba(0,0,0,0.15);
