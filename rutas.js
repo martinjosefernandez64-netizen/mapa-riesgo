@@ -76,7 +76,7 @@ function rutaValida(feature) {
 function construirLeyendaRutas() {
   const leyenda = L.control({ position: 'bottomleft' }); // Aquí no hay conflicto
   leyenda.onAdd = function () {
-    const div = L.DomUtil.create('div', 'leyenda');
+    const div = L.DomUtil.create('div', 'leyenda-caja');
     let html = '<div class="leyenda-titulo">Rutas</div>';
     html += '<div class="leyenda-item"><svg width="24" height="14"><line x1="0" y1="7" x2="24" y2="7" stroke="black" stroke-width="3.5"/></svg><span>Pavimentado</span></div>';
     html += '<div class="leyenda-item"><svg width="24" height="14"><line x1="0" y1="7" x2="24" y2="7" stroke="black" stroke-width="2.5" stroke-dasharray="6,4"/></svg><span>Mejorado</span></div>';
