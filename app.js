@@ -28,15 +28,14 @@ function formatearNumero(n, decimales) {
 }
 
 // ---------- Mapa ----------
-// IMPORTANTE: Lo asignamos a window para que rutas.js pueda acceder a él
 window.map = L.map('map').setView(CENTRO_INICIAL, ZOOM_INICIAL);
 
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
   attribution: '© OpenStreetMap'
 }).addTo(window.map);
 
-// Contenedor de leyendas (esquina inferior derecha)
-const contLeyendas = L.control({ position: 'bottomright' });
+// Contenedor único de leyendas (Arriba a la izquierda)
+const contLeyendas = L.control({ position: 'topleft' });
 contLeyendas.onAdd = function () {
   const div = L.DomUtil.create('div', 'contenedor-leyendas');
   return div;
@@ -110,7 +109,7 @@ function aplicarDistritos(mostrar) {
   if (mostrar) {
     if (!window.map.hasLayer(capaDistritos)) capaDistritos.addTo(window.map);
     if (divLeyendaRiesgo && !contenedor.contains(divLeyendaRiesgo)) {
-      contenedor.prepend(divLeyendaRiesgo); // prepend para que quede arriba
+      contenedor.prepend(divLeyendaRiesgo);
     }
     capaDistritos.bringToFront();
   } else {
@@ -179,7 +178,7 @@ function sincronizarLeyendaPron() {
   const visible = hayPronosticoVisible();
   
   if (visible && !contenedor.contains(divLeyendaPron)) {
-    contenedor.appendChild(divLeyendaPron); // appendChild para que quede abajo
+    contenedor.appendChild(divLeyendaPron);
   } else if (!visible && contenedor.contains(divLeyendaPron)) {
     contenedor.removeChild(divLeyendaPron);
   }
