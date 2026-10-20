@@ -40,18 +40,21 @@ html, body { margin: 0; padding: 0; height: 100%; font-family: sans-serif; }
   display: flex;
   flex-direction: column;
   gap: 8px;
-  max-height: calc(100vh - 40px);
+  /* Evita que se salga de la pantalla si hay muchas capas activas */
+  max-height: calc(100vh - 100px);
   overflow-y: auto;
-  pointer-events: auto;
+  pointer-events: none; /* Deja pasar los clics al mapa fuera de las cajas */
 }
 
 /* ============================================================
-   ESTILO BASE DE LEYENDAS (Riesgo, Precipitación, Rutas)
+   CAJAS DE LEYENDA (Riesgo, Precipitación)
    ============================================================ */
-.leyenda {
+.leyenda-caja {
   background: white; padding: 10px 12px; border-radius: 6px;
   box-shadow: 0 2px 8px rgba(0,0,0,0.25);
-  font-size: 12px; line-height: 1.5; max-width: 220px;
+  font-size: 12px; line-height: 1.5; 
+  width: 200px; /* Ancho fijo para que no se deforme */
+  pointer-events: auto; /* Reactiva los clics en la caja */
 }
 .leyenda-titulo { font-weight: bold; margin-bottom: 6px; font-size: 13px; }
 .leyenda-item { display: flex; align-items: center; margin: 2px 0; }
@@ -62,6 +65,11 @@ html, body { margin: 0; padding: 0; height: 100%; font-family: sans-serif; }
 .leyenda-pie {
   margin-top: 6px; padding-top: 6px;
   border-top: 1px solid #ddd; font-size: 11px; color: #555;
+}
+
+/* Leyenda de Rutas (Abajo a la izquierda usa la clase base de Leaflet) */
+.leaflet-bottom.leaflet-left .leyenda-caja {
+  width: auto;
 }
 
 /* ============================================================
