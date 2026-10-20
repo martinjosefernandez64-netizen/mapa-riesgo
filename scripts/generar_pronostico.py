@@ -2,15 +2,18 @@
 """
 Genera el pronóstico de precipitación acumulada 72 h del WRF-SMN.
 
-Fuente de datos:
-- Un único archivo: WRFDETAR_01H_YYYYMMDD_HH_072.nc
-- Contiene la precipitación ACUMULADA TOTAL desde t=0 hasta t=72h
-  en la variable PP (1 sola banda).
-- Se busca la corrida más reciente disponible entre 12, 06, 00 y 18 UTC.
+Genera 4 capas:
+- total: acumulado de 72 h (suma de los 3 archivos)
+- dia1:  lluvia del día 1 (0-24h)
+- dia2:  lluvia del día 2 (24-48h)
+- dia3:  lluvia del día 3 (48-72h)
 
-Salida:
-- Teselas XYZ (PNG con transparencia) recortadas al polígono de Santa Fe.
-- Metadata con la escala del SMN orientada al sector agropecuario.
+La suma de dia1 + dia2 + dia3 = total.
+
+Fuente:
+- WRFDETAR_01H_YYYYMMDD_HH_024.nc
+- WRFDETAR_01H_YYYYMMDD_HH_048.nc
+- WRFDETAR_01H_YYYYMMDD_HH_072.nc
 """
 
 import os
@@ -49,17 +52,15 @@ DIR_METADATA = "datos/pronostico"
 RUTA_POLIGONO = "datos/santa_fe.geojson"
 
 MARGEN_BBOX = 0.1
-
 ZOOM_MIN, ZOOM_MAX = 0, 11
 
-# Horas de corrida en orden de preferencia (la más reciente primero).
+# Corridas en orden de preferencia
 HORAS_CORRIDA = ["12", "06", "00", "18"]
 
-# Sufijo del archivo acumulado total (72 h).
-SUFIJO_TOTAL = "072"
+# Plazos de los archivos a descargar (24, 48, 72 h)
+PLAZOS = ["024", "048", "072"]
 
 NODATA_VALOR = -9999
-
 N_PIXELES_POR_GRADO = 60
 
 ESCALA = [
@@ -99,29 +100,12 @@ def descargar_archivo(fs, ruta_s3, ruta_local, max_intentos=3):
 
 
 def procesar_archivo_pp(ruta_nc):
-    """
-    Lee la variable PP del archivo 01H_072.nc del SMN.
-
-    Este archivo contiene el acumulado total de 72 h en 1 sola banda.
-    No hay que sumar nada: el valor ya es el total.
-    """
+    """Lee la variable PP del archivo (1 sola banda)."""
     ds = xr.open_dataset(ruta_nc, engine="netcdf4")
-
-    if "PP" in ds.data_vars:
-        pp = ds["PP"]
-    else:
-        candidatos = [v for v in ds.data_vars
-                      if "precip" in v.lower() or v.upper() == "PP"]
-        if not candidatos:
-            ds.close()
-            raise ValueError(f"No se encontró PP en {ruta_nc}. "
-                             f"Variables: {list(ds.data_vars)}")
-        pp = ds[candidatos[0]]
-        log.warning("  Variable PP no encontrada, usando %s", candidatos[0])
-
-    log.info("  PP attrs: %s", dict(pp.attrs))
-    log.info("  PP shape original: %s", pp.shape)
-
+    if "PP" not in ds.data_vars:
+        ds.close()
+        raise ValueError(f"No se encontró PP en {ruta_nc}")
+    pp = ds["PP"]
     valores = pp.values
     if valores.ndim == 3:
         valores = valores[0]
@@ -130,8 +114,106 @@ def procesar_archivo_pp(ruta_nc):
     return valores
 
 
+def interpolar_a_grilla(acumulado, lat2d, lon2d, mascara_bbox,
+                        LON_MIN, LON_MAX, LAT_MIN, LAT_MAX):
+    """Interpola el array WRF a la grilla regular."""
+    N_LON = max(100, int((LON_MAX - LON_MIN) * N_PIXELES_POR_GRADO))
+    N_LAT = max(100, int((LAT_MAX - LAT_MIN) * N_PIXELES_POR_GRADO))
+    lon_reg = np.linspace(LON_MIN, LON_MAX, N_LON)
+    lat_reg = np.linspace(LAT_MIN, LAT_MAX, N_LAT)
+
+    puntos_lon = lon2d[mascara_bbox]
+    puntos_lat = lat2d[mascara_bbox]
+    valores = acumulado[mascara_bbox]
+    validos = np.isfinite(valores)
+
+    grid_lon, grid_lat = np.meshgrid(lon_reg, lat_reg)
+
+    interp_linear = griddata(
+        np.column_stack([puntos_lon[validos], puntos_lat[validos]]),
+        valores[validos],
+        (grid_lon, grid_lat),
+        method="linear",
+        fill_value=np.nan,
+    ).astype(np.float32)
+
+    interp_nearest = griddata(
+        np.column_stack([puntos_lon[validos], puntos_lat[validos]]),
+        valores[validos],
+        (grid_lon, grid_lat),
+        method="nearest",
+        fill_value=np.nan,
+    ).astype(np.float32)
+
+    resultado = np.where(
+        np.isnan(interp_linear), interp_nearest, interp_linear
+    ).astype(np.float32)
+
+    return resultado, lat_reg, lon_reg
+
+
+def generar_capa(acumulado, gdf, lat_reg, lon_reg, archivo_tif,
+                 directorio_teselas, LON_MIN, LON_MAX, LAT_MIN, LAT_MAX):
+    """Genera una capa (GeoTIFF + teselas) a partir de un array interpolado."""
+    lluvia = xr.DataArray(
+        acumulado,
+        dims=["latitude", "longitude"],
+        coords={"latitude": lat_reg, "longitude": lon_reg},
+        name="PP",
+        attrs={"units": "mm"},
+    )
+    lluvia = lluvia.rio.write_crs("EPSG:4326")
+    lluvia = lluvia.rio.set_spatial_dims(
+        x_dim="longitude", y_dim="latitude", inplace=True
+    )
+
+    lluvia = lluvia.rio.clip(
+        gdf.geometry.values, gdf.crs, drop=False, invert=False
+    )
+    lluvia = lluvia.fillna(NODATA_VALOR)
+    lluvia = lluvia.rio.write_nodata(NODATA_VALOR)
+    lluvia.rio.to_raster(archivo_tif, nodata=NODATA_VALOR)
+
+    # Paleta
+    archivo_color = archivo_tif.replace(".tif", "_color.tif")
+    lineas_color = [f"{NODATA_VALOR} 0 0 0 0"]
+    for vmin, vmax, hex_color in ESCALA:
+        r, g, b = hex_a_rgb(hex_color)
+        lineas_color.append(f"{vmin} {r} {g} {b} 255")
+    archivo_tabla = archivo_tif.replace(".tif", "_paleta.txt")
+    with open(archivo_tabla, "w") as f:
+        f.write("\n".join(lineas_color))
+
+    subprocess.run([
+        "gdaldem", "color-relief",
+        archivo_tif, archivo_tabla, archivo_color, "-alpha",
+    ], check=True)
+
+    # Teselas
+    if os.path.exists(directorio_teselas):
+        shutil.rmtree(directorio_teselas)
+
+    subprocess.run([
+        "gdal2tiles.py",
+        "-z", f"{ZOOM_MIN}-{ZOOM_MAX}",
+        "-w", "none",
+        "-p", "mercator",
+        "--xyz",
+        "--processes", "4",
+        archivo_color,
+        directorio_teselas,
+    ], check=True)
+
+    # Estadísticas
+    arr = lluvia.values
+    validos = arr[arr != NODATA_VALOR]
+    max_val = float(np.max(validos)) if len(validos) > 0 else 0.0
+
+    return max_val
+
+
 # ============================================================
-# PROCESAMIENTO PRINCIPAL
+# MAIN
 # ============================================================
 def main():
     log.info("=" * 60)
@@ -145,33 +227,28 @@ def main():
     gdf = gpd.read_file(RUTA_POLIGONO)
     if gdf.crs and str(gdf.crs) != "EPSG:4326":
         gdf = gdf.to_crs("EPSG:4326")
-    log.info("  Polígono: %d entidad(es), CRS: %s", len(gdf), gdf.crs)
 
     lon_min_p, lat_min_p, lon_max_p, lat_max_p = gdf.total_bounds
-    log.info("  BBox del polígono: lon [%.4f, %.4f], lat [%.4f, %.4f]",
-             lon_min_p, lon_max_p, lat_min_p, lat_max_p)
-
     LON_MIN = lon_min_p - MARGEN_BBOX
     LON_MAX = lon_max_p + MARGEN_BBOX
     LAT_MIN = lat_min_p - MARGEN_BBOX
     LAT_MAX = lat_max_p + MARGEN_BBOX
-    log.info("  BBox de trabajo (+%.2f°): lon [%.4f, %.4f], lat [%.4f, %.4f]",
-             MARGEN_BBOX, LON_MIN, LON_MAX, LAT_MIN, LAT_MAX)
+
+    log.info("  BBox: lon [%.4f, %.4f], lat [%.4f, %.4f]",
+             LON_MIN, LON_MAX, LAT_MIN, LAT_MAX)
 
     with tempfile.TemporaryDirectory() as tmp:
-        archivo_tif = os.path.join(tmp, "pronostico_72h.tif")
-
         # ------------------------------------------------
-        # 1. Corrida más reciente
+        # 1. Buscar corrida
         # ------------------------------------------------
         log.info("=" * 60)
-        log.info("BUSCANDO CORRIDA DISPONIBLE EN EL BUCKET DEL SMN")
+        log.info("BUSCANDO CORRIDA")
         log.info("=" * 60)
 
         fs = s3fs.S3FileSystem(anon=True)
         hoy = datetime.datetime.now()
-
         corrida = None
+
         for dias_atras in range(3):
             fecha = hoy - datetime.timedelta(days=dias_atras)
             anio = fecha.strftime("%Y")
@@ -180,257 +257,150 @@ def main():
 
             for hora_corrida in HORAS_CORRIDA:
                 ruta_test = (f"{BUCKET}/DATA/WRF/DET/{anio}/{mes}/{dia}/{hora_corrida}/"
-                             f"WRFDETAR_01H_{anio}{mes}{dia}_{hora_corrida}_{SUFIJO_TOTAL}.nc")
+                             f"WRFDETAR_01H_{anio}{mes}{dia}_{hora_corrida}_072.nc")
                 try:
                     fs.info(ruta_test)
                     corrida = (anio, mes, dia, hora_corrida)
-                    log.info("  Corrida encontrada: %s-%s-%s %s UTC",
-                             anio, mes, dia, hora_corrida)
+                    log.info("  Corrida: %s-%s-%s %s UTC", anio, mes, dia, hora_corrida)
                     break
                 except Exception:
-                    log.info("  Corrida %s-%s-%s %s UTC no disponible",
-                             anio, mes, dia, hora_corrida)
-
-            if corrida is not None:
+                    log.info("  %s-%s-%s %s UTC no disponible", anio, mes, dia, hora_corrida)
+            if corrida:
                 break
 
-        if corrida is None:
-            log.error("No hay corridas disponibles. Se aborta.")
+        if not corrida:
+            log.error("No hay corridas disponibles.")
             sys.exit(1)
 
         anio, mes, dia, hora_corrida = corrida
 
         # ------------------------------------------------
-        # 2. Descarga del archivo 01H_072.nc
+        # 2. Descargar los 3 archivos
         # ------------------------------------------------
         log.info("=" * 60)
-        log.info("DESCARGANDO EL ARCHIVO DEL ACUMULADO TOTAL")
+        log.info("DESCARGANDO LOS 3 ARCHIVOS (024, 048, 072)")
         log.info("=" * 60)
 
-        ruta_s3 = (f"{BUCKET}/DATA/WRF/DET/{anio}/{mes}/{dia}/{hora_corrida}/"
-                   f"WRFDETAR_01H_{anio}{mes}{dia}_{hora_corrida}_{SUFIJO_TOTAL}.nc")
-        ruta_local = os.path.join(tmp, "pp_01h_072.nc")
-
-        t_inicio = time.time()
-        exito = descargar_archivo(fs, ruta_s3, ruta_local)
-        t_fin = time.time()
-
-        if not exito:
-            log.error("No se pudo descargar el archivo %s. Se aborta.", ruta_s3)
-            sys.exit(1)
-
-        log.info("  Descargado en %.1f s (%.1f MB)",
-                 t_fin - t_inicio,
-                 os.path.getsize(ruta_local) / 1024 / 1024)
+        archivos_locales = {}
+        for plazo in PLAZOS:
+            ruta_s3 = (f"{BUCKET}/DATA/WRF/DET/{anio}/{mes}/{dia}/{hora_corrida}/"
+                       f"WRFDETAR_01H_{anio}{mes}{dia}_{hora_corrida}_{plazo}.nc")
+            ruta_local = os.path.join(tmp, f"pp_{plazo}.nc")
+            t0 = time.time()
+            ok = descargar_archivo(fs, ruta_s3, ruta_local)
+            if not ok:
+                log.error("No se pudo descargar %s. Se aborta.", ruta_s3)
+                sys.exit(1)
+            log.info("  %s descargado (%.1f MB, %.1fs)",
+                     plazo, os.path.getsize(ruta_local) / 1024 / 1024,
+                     time.time() - t0)
+            archivos_locales[plazo] = ruta_local
 
         # ------------------------------------------------
-        # 3. Leer el acumulado total
+        # 3. Leer estructura
         # ------------------------------------------------
         log.info("=" * 60)
-        log.info("LEYENDO EL ACUMULADO TOTAL")
+        log.info("LEYENDO ESTRUCTURA")
         log.info("=" * 60)
 
-        ds_ref = xr.open_dataset(ruta_local, engine="netcdf4")
-
+        ds_ref = xr.open_dataset(archivos_locales["072"], engine="netcdf4")
         lat2d = ds_ref["lat"].values
         lon2d = ds_ref["lon"].values
         if lat2d.ndim == 3:
             lat2d = lat2d[0]
         if lon2d.ndim == 3:
             lon2d = lon2d[0]
-
-        log.info("  Forma de la grilla: %s", lat2d.shape)
-        log.info("  lat: %.2f a %.2f", np.min(lat2d), np.max(lat2d))
-        log.info("  lon: %.2f a %.2f", np.min(lon2d), np.max(lon2d))
+        ds_ref.close()
 
         mascara_bbox = ((lon2d >= LON_MIN) & (lon2d <= LON_MAX) &
                         (lat2d >= LAT_MIN) & (lat2d <= LAT_MAX))
-        log.info("  Puntos dentro del bbox: %d", int(np.sum(mascara_bbox)))
 
-        if mascara_bbox.sum() < 100:
-            log.error("Muy pocos puntos del WRF dentro del bbox. Se aborta.")
-            sys.exit(1)
-
-        ds_ref.close()
+        log.info("  Grilla WRF: %s", lat2d.shape)
+        log.info("  Puntos en bbox: %d", int(np.sum(mascara_bbox)))
 
         # ------------------------------------------------
-        # 4. Leer PP (acumulado total de 72 h)
+        # 4. Leer los 3 archivos y calcular capas
         # ------------------------------------------------
         log.info("=" * 60)
-        log.info("LEYENDO LA VARIABLE PP")
+        log.info("CALCULANDO CAPAS")
         log.info("=" * 60)
 
-        acumulado = procesar_archivo_pp(ruta_local)
-        log.info("  Máximo acumulado (grilla WRF cruda): %.2f mm",
-                 float(np.nanmax(acumulado)))
-        log.info("  Media acumulada (grilla WRF cruda):  %.4f mm",
-                 float(np.nanmean(acumulado)))
+        pp_024 = procesar_archivo_pp(archivos_locales["024"])
+        pp_048 = procesar_archivo_pp(archivos_locales["048"])
+        pp_072 = procesar_archivo_pp(archivos_locales["072"])
 
-        os.remove(ruta_local)
+        # Interpretación: cada archivo es acumulado desde t=0.
+        # - Día 1 = 01H_024
+        # - Día 2 = 01H_048 - 01H_024
+        # - Día 3 = 01H_072 - 01H_048
+        # - Total = día1 + día2 + día3 = 01H_072
 
-        # ------------------------------------------------
-        # 5. Interpolación
-        # ------------------------------------------------
-        log.info("=" * 60)
-        log.info("INTERPOLANDO A CUADRÍCULA REGULAR")
-        log.info("=" * 60)
+        dia1 = pp_024
+        dia2 = pp_048 - pp_024
+        dia3 = pp_072 - pp_048
 
-        N_LON = max(100, int((LON_MAX - LON_MIN) * N_PIXELES_POR_GRADO))
-        N_LAT = max(100, int((LAT_MAX - LAT_MIN) * N_PIXELES_POR_GRADO))
-        lon_reg = np.linspace(LON_MIN, LON_MAX, N_LON)
-        lat_reg = np.linspace(LAT_MIN, LAT_MAX, N_LAT)
+        # Corregir valores negativos (por ruido numérico)
+        dia2 = np.clip(dia2, 0, None)
+        dia3 = np.clip(dia3, 0, None)
 
-        log.info("  Grilla destino: %d x %d (%.0f px/°)",
-                 N_LAT, N_LON, N_PIXELES_POR_GRADO)
+        total = dia1 + dia2 + dia3
 
-        puntos_lon = lon2d[mascara_bbox]
-        puntos_lat = lat2d[mascara_bbox]
-        valores = acumulado[mascara_bbox]
-        validos = np.isfinite(valores)
-
-        grid_lon, grid_lat = np.meshgrid(lon_reg, lat_reg)
-
-        interp_linear = griddata(
-            np.column_stack([puntos_lon[validos], puntos_lat[validos]]),
-            valores[validos],
-            (grid_lon, grid_lat),
-            method="linear",
-            fill_value=np.nan,
-        ).astype(np.float32)
-
-        interp_nearest = griddata(
-            np.column_stack([puntos_lon[validos], puntos_lat[validos]]),
-            valores[validos],
-            (grid_lon, grid_lat),
-            method="nearest",
-            fill_value=np.nan,
-        ).astype(np.float32)
-
-        acumulado_interp = np.where(
-            np.isnan(interp_linear), interp_nearest, interp_linear
-        ).astype(np.float32)
-
-        log.info("  Máximo interpolado: %.2f mm",
-                 float(np.nanmax(acumulado_interp)))
+        log.info("  Máximo crudo día 1: %.2f mm", float(np.nanmax(dia1[mascara_bbox])))
+        log.info("  Máximo crudo día 2: %.2f mm", float(np.nanmax(dia2[mascara_bbox])))
+        log.info("  Máximo crudo día 3: %.2f mm", float(np.nanmax(dia3[mascara_bbox])))
+        log.info("  Máximo crudo total: %.2f mm", float(np.nanmax(total[mascara_bbox])))
 
         # ------------------------------------------------
-        # 6. DataArray + recorte al polígono
-        # ------------------------------------------------
-        lluvia_regular = xr.DataArray(
-            acumulado_interp,
-            dims=["latitude", "longitude"],
-            coords={"latitude": lat_reg, "longitude": lon_reg},
-            name="PP",
-            attrs={"units": "mm", "long_name": "Precipitación acumulada 72h"},
-        )
-        lluvia_regular = lluvia_regular.rio.write_crs("EPSG:4326")
-        lluvia_regular = lluvia_regular.rio.set_spatial_dims(
-            x_dim="longitude", y_dim="latitude", inplace=True
-        )
-
-        log.info("=" * 60)
-        log.info("RECORTANDO AL POLÍGONO")
-        log.info("=" * 60)
-
-        lluvia_regular = lluvia_regular.rio.clip(
-            gdf.geometry.values,
-            gdf.crs,
-            drop=False,
-            invert=False,
-        )
-        log.info("  Forma después del clip: %s", lluvia_regular.shape)
-
-        # ------------------------------------------------
-        # 6c. NoData y guardado
-        # ------------------------------------------------
-        lluvia_regular = lluvia_regular.fillna(NODATA_VALOR)
-        lluvia_regular = lluvia_regular.rio.write_nodata(NODATA_VALOR)
-        lluvia_regular.rio.to_raster(archivo_tif, nodata=NODATA_VALOR)
-
-        arr = lluvia_regular.values
-        total = arr.size
-        nodata_count = int(np.sum(arr == NODATA_VALOR))
-        validos_final = arr[arr != NODATA_VALOR]
-
-        log.info("  Píxeles totales: %d", total)
-        log.info("  Píxeles con NoData: %d", nodata_count)
-        log.info("  Píxeles válidos: %d", total - nodata_count)
-        if len(validos_final) > 0:
-            log.info("  Rango de valores válidos: %.2f a %.2f mm",
-                     float(np.min(validos_final)),
-                     float(np.max(validos_final)))
-
-        if len(validos_final) == 0:
-            log.error("El ráster no tiene píxeles válidos. Se aborta.")
-            sys.exit(1)
-
-        # ------------------------------------------------
-        # 7. Paleta con NoData transparente
+        # 5. Interpolar las 4 capas
         # ------------------------------------------------
         log.info("=" * 60)
-        log.info("APLICANDO PALETA DE COLORES")
+        log.info("INTERPOLANDO LAS 4 CAPAS")
         log.info("=" * 60)
 
-        archivo_color = os.path.join(tmp, "pronostico_color.tif")
+        capas = {}
+        lat_reg = lon_reg = None
 
-        lineas_color = [f"{NODATA_VALOR} 0 0 0 0"]
-        for vmin, vmax, hex_color in ESCALA:
-            r, g, b = hex_a_rgb(hex_color)
-            lineas_color.append(f"{vmin} {r} {g} {b} 255")
-
-        archivo_tabla = os.path.join(tmp, "paleta.txt")
-        with open(archivo_tabla, "w") as f:
-            f.write("\n".join(lineas_color))
-
-        subprocess.run([
-            "gdaldem", "color-relief",
-            archivo_tif,
-            archivo_tabla,
-            archivo_color,
-            "-alpha",
-        ], check=True)
-
-        log.info("  Ráster coloreado: %s", archivo_color)
+        for nombre, arr in [("dia1", dia1), ("dia2", dia2),
+                            ("dia3", dia3), ("total", total)]:
+            log.info("  Interpolando %s...", nombre)
+            interp, lat_reg, lon_reg = interpolar_a_grilla(
+                arr, lat2d, lon2d, mascara_bbox,
+                LON_MIN, LON_MAX, LAT_MIN, LAT_MAX
+            )
+            capas[nombre] = interp
+            log.info("    Máx interpolado %s: %.2f mm",
+                     nombre, float(np.nanmax(interp)))
 
         # ------------------------------------------------
-        # 8. Teselas
+        # 6. Generar teselas para cada capa
         # ------------------------------------------------
         log.info("=" * 60)
         log.info("GENERANDO TESELAS")
         log.info("=" * 60)
 
-        if os.path.exists(DIR_TESELAS):
-            shutil.rmtree(DIR_TESELAS)
-
-        subprocess.run([
-            "gdal2tiles.py",
-            "-z", f"{ZOOM_MIN}-{ZOOM_MAX}",
-            "-w", "none",
-            "-p", "mercator",
-            "--xyz",
-            "--processes", "4",
-            archivo_color,
-            DIR_TESELAS,
-        ], check=True)
-
-        log.info("  Teselas generadas en %s/", DIR_TESELAS)
+        maximos = {}
+        for nombre in ["total", "dia1", "dia2", "dia3"]:
+            log.info("  Generando capa %s...", nombre)
+            dir_teselas = os.path.join(DIR_TESELAS, nombre)
+            archivo_tif = os.path.join(tmp, f"{nombre}.tif")
+            maximos[nombre] = generar_capa(
+                capas[nombre], gdf, lat_reg, lon_reg,
+                archivo_tif, dir_teselas,
+                LON_MIN, LON_MAX, LAT_MIN, LAT_MAX
+            )
+            log.info("    Máximo dentro del polígono %s: %.2f mm",
+                     nombre, maximos[nombre])
 
         # ------------------------------------------------
-        # 9. Metadata
+        # 7. Metadata
         # ------------------------------------------------
         os.makedirs(DIR_METADATA, exist_ok=True)
 
-        b = lluvia_regular.rio.bounds()
+        b = (
+            float(lon_reg[0]), float(lat_reg[0]),
+            float(lon_reg[-1]), float(lat_reg[-1])
+        )
         bounds_reales = [[b[1], b[0]], [b[3], b[2]]]
-
-        log.info("  Bounds reales del ráster: lon [%.4f, %.4f], lat [%.4f, %.4f]",
-                 b[0], b[2], b[1], b[3])
-
-        max_dentro_poligono = float(np.max(validos_final)) if len(validos_final) > 0 else 0.0
-
-        log.info("  Máximo dentro del polígono: %.2f mm", max_dentro_poligono)
-        log.info("  Máximo en el bbox completo (referencia): %.2f mm",
-                 float(np.nanmax(acumulado_interp)))
 
         escala_metadata = []
         for vmin, vmax, color in ESCALA:
@@ -441,28 +411,28 @@ def main():
             else:
                 label = f"{vmin} - {vmax}"
             escala_metadata.append({
-                "min": vmin,
-                "max": vmax,
-                "color": color,
-                "label": label,
+                "min": vmin, "max": vmax, "color": color, "label": label,
             })
 
         metadata = {
             "fecha_emision": datetime.datetime.now(
                 datetime.timezone.utc).isoformat(),
             "corrida_wrf": f"{anio}-{mes}-{dia} {hora_corrida} UTC",
-            "variable": "Precipitación acumulada 72 h",
+            "variable": "Precipitación acumulada",
             "unidad": "mm",
             "bounds": bounds_reales,
             "zoom_min": ZOOM_MIN,
             "zoom_max": ZOOM_MAX,
-            "max_mm": max_dentro_poligono,
-            "max_mm_bbox": float(np.nanmax(acumulado_interp)),
-            "horas_procesadas": 72,
+            "capas": {
+                "total": {"label": "Total 72h", "max_mm": maximos["total"]},
+                "dia1":  {"label": "Día 1 (0-24h)",  "max_mm": maximos["dia1"]},
+                "dia2":  {"label": "Día 2 (24-48h)", "max_mm": maximos["dia2"]},
+                "dia3":  {"label": "Día 3 (48-72h)", "max_mm": maximos["dia3"]},
+            },
+            "max_mm": maximos["total"],
             "escala": escala_metadata,
             "crs": "EPSG:4326",
             "recortado_a": "Santa Fe",
-            "fuente": f"WRFDETAR_01H_{anio}{mes}{dia}_{hora_corrida}_{SUFIJO_TOTAL}.nc",
         }
 
         ruta_metadata = os.path.join(DIR_METADATA, "metadata.json")
@@ -470,8 +440,6 @@ def main():
             json.dump(metadata, f, indent=2, ensure_ascii=False)
 
         log.info("  Metadata: %s", ruta_metadata)
-        log.info("  Máximo final (dentro del polígono): %.2f mm",
-                 metadata["max_mm"])
 
     log.info("=" * 60)
     log.info("PROCESO COMPLETO")
