@@ -4,6 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Mapa de Riesgo - Santa Fe</title>
+  <!-- Soluciona el error 404 del favicon -->
+  <link rel="icon" href="data:,">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
   <link rel="stylesheet" href="style.css">
 </head>
@@ -24,20 +26,23 @@
     <div class="capa-grupo">
       <div class="capa-titulo">Pronóstico de precipitación</div>
       <label>
-        <input type="checkbox" id="chk-total">
-        Total 72 h
+        <input type="checkbox" id="chk-total"> Total 72 h
       </label>
       <label>
-        <input type="checkbox" id="chk-dia1">
-        Día 1 (0–24 h)
+        <input type="checkbox" id="chk-dia1"> Día 1 (0–24 h)
       </label>
       <label>
-        <input type="checkbox" id="chk-dia2">
-        Día 2 (24–48 h)
+        <input type="checkbox" id="chk-dia2"> Día 2 (24–48 h)
       </label>
       <label>
-        <input type="checkbox" id="chk-dia3">
-        Día 3 (48–72 h)
+        <input type="checkbox" id="chk-dia3"> Día 3 (48–72 h)
+      </label>
+    </div>
+
+    <div class="capa-grupo">
+      <div class="capa-titulo">Red vial</div>
+      <label>
+        <input type="checkbox" id="chk-rutas"> Rutas provinciales
       </label>
     </div>
 
@@ -56,5 +61,6 @@
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="app.js"></script>
+  <script src="rutas.js"></script>
 </body>
 </html>
