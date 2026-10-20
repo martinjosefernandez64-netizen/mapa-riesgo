@@ -51,7 +51,7 @@ let capaDistritos = null;
 let divLeyendaRiesgo = null;
 
 function crearLeyendaRiesgoHTML() {
-  const div = L.DomUtil.create('div', 'leyenda');
+  const div = L.DomUtil.create('div', 'leyenda-caja');
   let html = '<div class="leyenda-titulo">Nivel de riesgo</div>';
   CLASES_RIESGO.slice().reverse().forEach(function (item) {
     html += '<div class="leyenda-item">' +
@@ -148,7 +148,7 @@ let divLeyendaPron = null;
 let metaPron = null;
 
 function crearLeyendaPronHTML(meta) {
-  const div = L.DomUtil.create('div', 'leyenda');
+  const div = L.DomUtil.create('div', 'leyenda-caja');
   let html = '<div class="leyenda-titulo">Precipitación (mm)</div>';
   meta.escala.slice().reverse().forEach(function (item) {
     html += '<div class="leyenda-item">' +
