@@ -2,7 +2,7 @@ name: Actualizar CHIRPS (v3.0)
 
 on:
   schedule:
-    # Ejecutar el día 25 de cada mes a las 06:00 UTC (la tercera semana ya pasó, datos Final disponibles)
+    # Ejecutar el día 25 de cada mes a las 06:00 UTC (producto Final en la 3ª semana)
     - cron: '0 6 25 * *'
   workflow_dispatch:
 
@@ -11,21 +11,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Configurar Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-      
+
       - name: Instalar GDAL y dependencias
         run: |
           sudo apt-get update
           sudo apt-get install -y gdal-bin python3-gdal
-          pip install rasterio geopandas requests python-dateutil
-      
+          pip install rasterio geopandas requests python-dateutil rioxarray xarray
+
       - name: Ejecutar script de CHIRPS
         run: python scripts/generar_chirps.py
-      
+
       - name: Commit y Push
         run: |
           git config --local user.email "action@github.com"
