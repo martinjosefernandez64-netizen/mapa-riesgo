@@ -23,8 +23,18 @@ jobs:
           sudo apt-get install -y gdal-bin python3-gdal
           pip install rasterio geopandas requests python-dateutil rioxarray xarray
 
+      - name: Cachear GeoTIFFs crudos y recortes de CHIRPS
+        uses: actions/cache@v4
+        with:
+          path: cache_chirps/
+          key: chirps-cache-${{ github.run_id }}
+          restore-keys: |
+            chirps-cache-
+
       - name: Ejecutar script de CHIRPS
         run: python scripts/generar_chirps.py
+        env:
+          CHIRPS_CACHE_DIR: cache_chirps
 
       - name: Commit y Push
         run: |
