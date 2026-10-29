@@ -14,6 +14,14 @@
   const COLORES = ['#ffffcc', '#a1dab4', '#41b6c4', '#2c7fb8', '#253494'];
   const PNG_TRANSPARENTE = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
 
+  // CHIRPS tiene 0.05° de resolución (~5.5 km). Zoom 8 ya es más
+  // resolución de la que los datos tienen. El script Python genera
+  // teselas hasta zoom 8, así que maxNativeZoom debe ser 8.
+  const MAX_NATIVE_ZOOM = 8;
+
+  // Bounds aproximados de Santa Fe (para no pedir teselas fuera de la provincia)
+  const BOUNDS_SANTA_FE = [[-34.0, -63.5], [-27.5, -58.0]];
+
   // ---- Estado ----
   let layerMensual = null;
   let layerAnual   = null;
@@ -28,13 +36,17 @@
     layerMensual = L.tileLayer(TILES_MENSUAL, {
       opacity: OPACITY,
       attribution: 'CHIRPS v3.0 — CHC/UCSB',
-      maxNativeZoom: 10, maxZoom: 18,
+      maxNativeZoom: MAX_NATIVE_ZOOM,
+      maxZoom: 18,
+      bounds: BOUNDS_SANTA_FE,
       errorTileUrl: PNG_TRANSPARENTE
     });
     layerAnual = L.tileLayer(TILES_ANUAL, {
       opacity: OPACITY,
       attribution: 'CHIRPS v3.0 — CHC/UCSB',
-      maxNativeZoom: 10, maxZoom: 18,
+      maxNativeZoom: MAX_NATIVE_ZOOM,
+      maxZoom: 18,
+      bounds: BOUNDS_SANTA_FE,
       errorTileUrl: PNG_TRANSPARENTE
     });
   }
