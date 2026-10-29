@@ -1,5 +1,7 @@
 /* ============================================================
    MAPA DE RIESGO Y PRONÓSTICO - SANTA FE
+   Lógica de visualización: panel desplegable, una capa
+   exclusiva a la vez + rutas superponibles.
    ============================================================ */
 
 const PNG_TRANSPARENTE = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
@@ -44,11 +46,87 @@ contLeyendas.addTo(window.map);
 
 
 // ============================================================
+// GESTIÓN DE CAPAS EXCLUSIVAS
+// ============================================================
+// Registro de capas exclusivas (una activa a la vez)
+const capasExclusivas = {
+  distritos:       { layer: null, leyenda: null, tipo: 'riesgo' },
+  total:           { layer: null, leyenda: null, tipo: 'pron' },
+  dia1:            { layer: null, leyenda: null, tipo: 'pron' },
+  dia2:            { layer: null, leyenda: null, tipo: 'pron' },
+  dia3:            { layer: null, leyenda: null, tipo: 'pron' },
+  'chirps-anual':  { layer: null, leyenda: null, tipo: 'chirps' },
+  'chirps-mensual':{ layer: null, leyenda: null, tipo: 'chirps' }
+};
+
+let capaActiva = null;
+
+function ocultarTodasLasLeyendas() {
+  const contenedor = document.querySelector('.contenedor-leyendas');
+  if (!contenedor) return;
+  // Solo quitamos las leyendas de capas exclusivas, la de rutas vive en otro control
+  Object.keys(capasExclusivas).forEach(function (k) {
+    const l = capasExclusivas[k].leyenda;
+    if (l && contenedor.contains(l)) contenedor.removeChild(l);
+  });
+}
+
+function mostrarLeyendaDe(nombre) {
+  const contenedor = document.querySelector('.contenedor-leyendas');
+  const l = capasExclusivas[nombre] && capasExclusivas[nombre].leyenda;
+  if (contenedor && l && !contenedor.contains(l)) contenedor.appendChild(l);
+}
+
+function activarCapaExclusiva(nombre) {
+  if (capaActiva === nombre) return;
+
+  // 1. Desactivar la anterior
+  if (capaActiva) {
+    const prev = capasExclusivas[capaActiva];
+    if (prev.layer) {
+      if (prev.tipo === 'chirps' && window.chirps) {
+        window.chirps.desactivar(capaActiva);
+      } else if (window.map.hasLayer(prev.layer)) {
+        window.map.removeLayer(prev.layer);
+      }
+    }
+    if (prev.tipo === 'chirps' && window.chirps) window.chirps.ocultarLeyenda();
+  }
+
+  capaActiva = nombre;
+  const nueva = capasExclusivas[nombre];
+  if (!nueva) return;
+
+  // 2. Activar la nueva
+  if (nueva.tipo === 'chirps') {
+    if (window.chirps) {
+      window.chirps.activar(nombre);
+      window.chirps.mostrarLeyenda(nombre === 'chirps-anual' ? 'anual' : 'mensual');
+    }
+    return;
+  }
+
+  if (nueva.layer) {
+    if (!window.map.hasLayer(nueva.layer)) nueva.layer.addTo(window.map);
+    if (nueva.layer.bringToFront) nueva.layer.bringToFront();
+  }
+
+  // 3. Leyenda
+  ocultarTodasLasLeyendas();
+  mostrarLeyendaDe(nombre);
+}
+
+// Enganche de los radios (una sola capa exclusiva)
+document.querySelectorAll('input[name="capa-exclusiva"]').forEach(function (radio) {
+  radio.addEventListener('change', function () {
+    if (radio.checked) activarCapaExclusiva(radio.value);
+  });
+});
+
+
+// ============================================================
 // 1. CAPA DE DISTRITOS (RIESGO)
 // ============================================================
-let capaDistritos = null;
-let divLeyendaRiesgo = null;
-
 function crearLeyendaRiesgoHTML() {
   const div = L.DomUtil.create('div', 'leyenda-caja');
   let html = '<div class="leyenda-titulo">Nivel de riesgo</div>';
@@ -103,35 +181,17 @@ function onEachDistrito(feature, layer) {
   layer.on('mouseout',  function () { this.setStyle({ weight: 0.6, color: '#333333' }); });
 }
 
-function aplicarDistritos(mostrar) {
-  if (!capaDistritos) return;
-  const contenedor = document.querySelector('.contenedor-leyendas');
-  if (mostrar) {
-    if (!window.map.hasLayer(capaDistritos)) capaDistritos.addTo(window.map);
-    if (divLeyendaRiesgo && !contenedor.contains(divLeyendaRiesgo)) {
-      contenedor.prepend(divLeyendaRiesgo);
-    }
-    capaDistritos.bringToFront();
-  } else {
-    if (window.map.hasLayer(capaDistritos)) window.map.removeLayer(capaDistritos);
-    if (divLeyendaRiesgo && contenedor.contains(divLeyendaRiesgo)) {
-      contenedor.removeChild(divLeyendaRiesgo);
-    }
-  }
-}
-
 fetch('datos/riesgo/distritos_mediana.geojson')
   .then(r => r.json())
   .then(data => {
-    capaDistritos = L.geoJSON(data, { style: estiloDistrito, onEachFeature: onEachDistrito });
-    divLeyendaRiesgo = crearLeyendaRiesgoHTML();
-    
-    document.getElementById('chk-distritos').checked = true;
-    aplicarDistritos(true);
+    const capa = L.geoJSON(data, { style: estiloDistrito, onEachFeature: onEachDistrito });
+    capasExclusivas.distritos.layer  = capa;
+    capasExclusivas.distritos.leyenda = crearLeyendaRiesgoHTML();
 
-    document.getElementById('chk-distritos').addEventListener('change', e => {
-      aplicarDistritos(e.target.checked);
-    });
+    document.getElementById('chk-distritos').disabled = false;
+    // Activar por defecto
+    document.getElementById('chk-distritos').checked = true;
+    activarCapaExclusiva('distritos');
   })
   .catch(err => {
     console.error('Error cargando distritos:', err);
@@ -142,7 +202,6 @@ fetch('datos/riesgo/distritos_mediana.geojson')
 // ============================================================
 // 2. CAPA DE PRONÓSTICO
 // ============================================================
-const capasPron = {};
 let divLeyendaPron = null;
 let metaPron = null;
 
@@ -168,30 +227,6 @@ function crearCapaPronostico(nombre, meta, bounds) {
   });
 }
 
-function hayPronosticoVisible() {
-  return Object.values(capasPron).some(c => window.map.hasLayer(c));
-}
-
-function sincronizarLeyendaPron() {
-  if (!divLeyendaPron) return;
-  const contenedor = document.querySelector('.contenedor-leyendas');
-  const visible = hayPronosticoVisible();
-  
-  if (visible && !contenedor.contains(divLeyendaPron)) {
-    contenedor.appendChild(divLeyendaPron);
-  } else if (!visible && contenedor.contains(divLeyendaPron)) {
-    contenedor.removeChild(divLeyendaPron);
-  }
-}
-
-function aplicarSubcapa(nombre, mostrar) {
-  const capa = capasPron[nombre];
-  if (!capa) return;
-  if (mostrar && !window.map.hasLayer(capa)) capa.addTo(window.map);
-  else if (!mostrar && window.map.hasLayer(capa)) window.map.removeLayer(capa);
-  sincronizarLeyendaPron();
-}
-
 function actualizarAviso(meta) {
   const emitido = new Date(meta.fecha_emision);
   const vigenteHasta = new Date(emitido.getTime() + 72 * 3600 * 1000);
@@ -200,7 +235,7 @@ function actualizarAviso(meta) {
 
   document.getElementById('aviso-emitido').textContent = emitido.toLocaleString('es-AR', formatoAR);
   document.getElementById('aviso-vigencia').textContent = vigenteHasta.toLocaleString('es-AR', formatoAR);
-  
+
   const estado = document.getElementById('aviso-estado');
   if (horasDesdeEmision > HORAS_VIGENCIA) {
     estado.innerHTML = '<span style="color:#c0392b;">Última actualización hace ' + Math.round(horasDesdeEmision) + ' h.</span>';
@@ -218,18 +253,21 @@ fetch('datos/pronostico/metadata.json')
     actualizarAviso(meta);
     const bounds = L.latLngBounds([meta.bounds[0][0], meta.bounds[0][1]], [meta.bounds[1][0], meta.bounds[1][1]]);
 
-    capasPron.total = crearCapaPronostico('total', meta, bounds);
-    capasPron.dia1  = crearCapaPronostico('dia1',  meta, bounds);
-    capasPron.dia2  = crearCapaPronostico('dia2',  meta, bounds);
-    capasPron.dia3  = crearCapaPronostico('dia3',  meta, bounds);
-    
+    capasExclusivas.total.layer = crearCapaPronostico('total', meta, bounds);
+    capasExclusivas.dia1.layer  = crearCapaPronostico('dia1',  meta, bounds);
+    capasExclusivas.dia2.layer  = crearCapaPronostico('dia2',  meta, bounds);
+    capasExclusivas.dia3.layer  = crearCapaPronostico('dia3',  meta, bounds);
+
     divLeyendaPron = crearLeyendaPronHTML(meta);
+    capasExclusivas.total.leyenda = divLeyendaPron;
+    // Las subcapas de pronóstico comparten la misma leyenda
+    capasExclusivas.dia1.leyenda = divLeyendaPron;
+    capasExclusivas.dia2.leyenda = divLeyendaPron;
+    capasExclusivas.dia3.leyenda = divLeyendaPron;
 
     ['total', 'dia1', 'dia2', 'dia3'].forEach(nombre => {
-      const idCheck = 'chk-' + (nombre === 'total' ? 'total' : nombre);
-      const chk = document.getElementById(idCheck);
-      chk.checked = false;
-      chk.addEventListener('change', e => aplicarSubcapa(nombre, e.target.checked));
+      const chk = document.getElementById('chk-' + nombre);
+      if (chk) chk.disabled = false;
     });
   })
   .catch(err => {
@@ -240,3 +278,33 @@ fetch('datos/pronostico/metadata.json')
       if (c) c.disabled = true;
     });
   });
+
+
+// ============================================================
+// 3. BOTÓN ÚNICO DE CAPAS
+// ============================================================
+(function () {
+  const btnCapas = document.getElementById('btn-capas');
+  const panel = document.getElementById('panel');
+  if (!btnCapas || !panel) return;
+
+  btnCapas.addEventListener('click', function () {
+    const abierto = !panel.classList.contains('panel-oculto');
+    if (abierto) {
+      panel.classList.add('panel-oculto');
+      btnCapas.setAttribute('aria-expanded', 'false');
+    } else {
+      panel.classList.remove('panel-oculto');
+      btnCapas.setAttribute('aria-expanded', 'true');
+    }
+  });
+
+  // Cerrar al hacer clic fuera
+  document.addEventListener('click', function (e) {
+    if (panel.classList.contains('panel-oculto')) return;
+    if (panel.contains(e.target)) return;
+    if (e.target === btnCapas || btnCapas.contains(e.target)) return;
+    panel.classList.add('panel-oculto');
+    btnCapas.setAttribute('aria-expanded', 'false');
+  });
+})();
