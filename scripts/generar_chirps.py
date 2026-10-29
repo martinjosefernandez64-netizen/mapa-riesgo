@@ -9,8 +9,10 @@ Genera 2 capas:
 
 Flujo:
 1. Descarga los GeoTIFF mensuales de CHIRPS v3.0 (bucket público de CHC/UCSB).
+   Si CHIRPS_CACHE_DIR está definido, cachea los crudos entre ejecuciones.
 2. Recorta cada mes al polígono de Santa Fe con rioxarray.clip (mismo
    criterio que generar_pronostico.py: fuera del polígono → -9999).
+   Los recortes también se cachean si CHIRPS_CACHE_DIR está definido.
 3. Suma los 12 meses para el acumulado anual.
 4. Calcula cuantiles (20/40/60/80) solo sobre píxeles válidos dentro
    del polígono, para clasificar en 5 clases.
@@ -60,8 +62,15 @@ DIR_TESELAS = "tiles_chirps"
 DIR_METADATA = "datos"
 ARCHIVO_METADATA = os.path.join(DIR_METADATA, "chirps_metadata.json")
 
+# Directorio de caché persistente entre ejecuciones del workflow.
+# Si no está definido, se usa el tmp_dir temporal.
+CACHE_DIR = os.environ.get("CHIRPS_CACHE_DIR", "").strip()
+
 NODATA_VALOR = -9999
-ZOOM_MIN, ZOOM_MAX = 5, 10
+# CHIRPS tiene 0.05° de resolución (~5.5 km). Zoom 8 ya es más resolución
+# de la que los datos tienen; zoom 10 multiplica x16 las teselas sin
+# ganancia visual y hace que gdal2tiles se cuelgue.
+ZOOM_MIN, ZOOM_MAX = 5, 8
 N_MESES_ANUAL = 12
 
 # 5 colores para las 5 clases por cuantiles
@@ -111,10 +120,19 @@ def cargar_poligono():
 
 
 def descargar_mes(year, month, tmp_dir, max_intentos=3):
-    """Descarga el GeoTIFF mensual de CHIRPS v3.0. Retorna la ruta local."""
+    """
+    Descarga el GeoTIFF mensual de CHIRPS v3.0. Retorna la ruta local.
+
+    Si CACHE_DIR está definido, usa ese directorio persistente para que
+    los archivos sobrevivan entre ejecuciones del workflow. Si no,
+    usa tmp_dir (se borra al terminar el script).
+    """
     filename = f"chirps-v3.0.{year}.{month:02d}.tif"
     url = f"{BASE_URL}{filename}"
-    local_path = os.path.join(tmp_dir, filename)
+
+    base_dir = CACHE_DIR if CACHE_DIR else tmp_dir
+    os.makedirs(base_dir, exist_ok=True)
+    local_path = os.path.join(base_dir, filename)
 
     if os.path.exists(local_path) and os.path.getsize(local_path) > 1_000_000:
         log.info("  Ya existe en caché: %s", filename)
@@ -149,7 +167,14 @@ def recortar_a_santa_fe(tif_path, output_path, gdf):
     - Píxeles fuera del polígono → -9999 (nodata).
     - Declara nodata=-9999 en el GeoTIFF de salida.
     - Deja el archivo listo para gdaldem color-relief -alpha.
+    - Si output_path ya existe y es más reciente que tif_path,
+      lo reutiliza (caché de recortes).
     """
+    if (os.path.exists(output_path) and
+            os.path.getmtime(output_path) >= os.path.getmtime(tif_path)):
+        log.info("  Recorte ya en caché: %s", os.path.basename(output_path))
+        return output_path
+
     da = xr.open_dataarray(tif_path, engine="rasterio")
 
     # Normalizar dimensiones: quitar eje 'band' si existe
@@ -170,7 +195,7 @@ def recortar_a_santa_fe(tif_path, output_path, gdf):
     da_rec = da_rec.rio.write_nodata(NODATA_VALOR)
 
     da_rec.rio.to_raster(output_path, nodata=NODATA_VALOR)
-    log.info("  Recortado (por polígono): %s", output_path)
+    log.info("  Recortado (por polígono): %s", os.path.basename(output_path))
     return output_path
 
 
@@ -214,7 +239,7 @@ def sumar_meses(lista_tifs, output_path):
     with rasterio.open(output_path, "w", **meta) as dest:
         dest.write(salida[np.newaxis, :, :])
 
-    log.info("  Suma completada: %s", output_path)
+    log.info("  Suma completada: %s", os.path.basename(output_path))
     return output_path
 
 
@@ -245,7 +270,9 @@ def generar_capa_chirps(tif_recortado, cuantiles, output_dir, tmp_dir, nombre):
     Sigue el mismo patrón que generar_capa() del pronóstico:
     1. Tabla de paleta: -9999 → (0,0,0,0) + 5 colores en los cortes.
     2. gdaldem color-relief -alpha → PNG con transparencia.
-    3. gdal2tiles.py sobre el PNG.
+    3. gdal_translate a PNG (más rápido de teselar que GeoTIFF).
+    4. gdal2tiles.py sobre el PNG, SIN --processes (evita el cuelgue
+       de gdal2tiles en GDAL 3.8.x con --xyz) y con ZOOM_MAX=8.
     """
     # 1. Construir tabla de paleta
     # gdaldem interpreta cada fila como límite inferior del intervalo.
@@ -260,14 +287,20 @@ def generar_capa_chirps(tif_recortado, cuantiles, output_dir, tmp_dir, nombre):
     with open(tabla, "w") as f:
         f.write("\n".join(lineas))
 
-    # 2. PNG coloreado con transparencia
+    # 2. GeoTIFF coloreado con transparencia
     tif_color = os.path.join(tmp_dir, f"{nombre}_color.tif")
     subprocess.run([
         "gdaldem", "color-relief",
         tif_recortado, tabla, tif_color, "-alpha",
     ], check=True)
 
-    # 3. Teselas
+    # 3. Convertir a PNG (más rápido para gdal2tiles que leer GeoTIFF)
+    png_color = os.path.join(tmp_dir, f"{nombre}_color.png")
+    subprocess.run([
+        "gdal_translate", "-of", "PNG", tif_color, png_color,
+    ], check=True)
+
+    # 4. Teselas (sin --processes, zoom máximo 8)
     if os.path.exists(output_dir):
         shutil.rmtree(output_dir)
     subprocess.run([
@@ -276,8 +309,8 @@ def generar_capa_chirps(tif_recortado, cuantiles, output_dir, tmp_dir, nombre):
         "-w", "none",
         "-p", "mercator",
         "--xyz",
-        "--processes", "4",
-        tif_color,
+        "-r", "bilinear",
+        png_color,
         output_dir,
     ], check=True)
 
@@ -292,6 +325,11 @@ def main():
     log.info("CHIRPS v3.0 — GENERANDO CAPAS PARA SANTA FE")
     log.info("=" * 60)
 
+    if CACHE_DIR:
+        log.info("Modo caché persistente: %s", CACHE_DIR)
+    else:
+        log.info("Modo sin caché persistente (solo tmp)")
+
     # 1. Cargar polígono
     gdf = cargar_poligono()
 
@@ -303,7 +341,11 @@ def main():
              ultimo_mes_completo.year, ultimo_mes_completo.month)
 
     with tempfile.TemporaryDirectory() as tmp:
-        # 3. Descargar y recortar los 12 meses (incluye el último)
+        # 3. Directorio para recortes: caché persistente si existe
+        rec_dir = os.path.join(CACHE_DIR, "recortes") if CACHE_DIR else tmp
+        os.makedirs(rec_dir, exist_ok=True)
+
+        # 4. Descargar y recortar los 12 meses (incluye el último)
         log.info("=" * 60)
         log.info("DESCARGANDO Y RECORTANDO LOS %d MESES", N_MESES_ANUAL)
         log.info("=" * 60)
@@ -315,23 +357,23 @@ def main():
                      i + 1, N_MESES_ANUAL, fecha.year, fecha.month)
             tif = descargar_mes(fecha.year, fecha.month, tmp)
             tif_rec = os.path.join(
-                tmp, f"mes_{fecha.year}_{fecha.month:02d}_rec.tif"
+                rec_dir, f"mes_{fecha.year}_{fecha.month:02d}_rec.tif"
             )
             recortar_a_santa_fe(tif, tif_rec, gdf)
             recortados.append(tif_rec)
 
-        # 4. Capa mensual = el primer recortado (último mes completo)
+        # 5. Capa mensual = el primer recortado (último mes completo)
         tif_mensual = recortados[0]
-        log.info("Capa mensual lista: %s", tif_mensual)
+        log.info("Capa mensual lista: %s", os.path.basename(tif_mensual))
 
-        # 5. Capa anual = suma de los 12 recortados
+        # 6. Capa anual = suma de los 12 recortados
         log.info("=" * 60)
         log.info("SUMANDO LOS %d MESES (ACUMULADO ANUAL)", N_MESES_ANUAL)
         log.info("=" * 60)
         tif_anual = os.path.join(tmp, "anual_12m.tif")
         sumar_meses(recortados, tif_anual)
 
-        # 6. Cuantiles
+        # 7. Cuantiles
         log.info("=" * 60)
         log.info("CALCULANDO CUANTILES")
         log.info("=" * 60)
@@ -340,7 +382,7 @@ def main():
         log.info("--- Anual (12 meses) ---")
         cuantiles_anual = calcular_cuantiles(tif_anual)
 
-        # 7. Generar teselas
+        # 8. Generar teselas
         log.info("=" * 60)
         log.info("GENERANDO TESELAS")
         log.info("=" * 60)
@@ -357,7 +399,7 @@ def main():
             tmp, "anual",
         )
 
-    # 8. Metadata
+    # 9. Metadata
     log.info("=" * 60)
     log.info("ESCRIBIENDO METADATA")
     log.info("=" * 60)
