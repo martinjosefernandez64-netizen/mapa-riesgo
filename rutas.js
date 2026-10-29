@@ -79,4 +79,47 @@ function construirLeyendaRutas() {
     const div = L.DomUtil.create('div', 'leyenda-caja');
     let html = '<div class="leyenda-titulo">Rutas</div>';
     html += '<div class="leyenda-item"><svg width="24" height="14"><line x1="0" y1="7" x2="24" y2="7" stroke="black" stroke-width="3.5"/></svg><span>Pavimentado</span></div>';
-    html += '<div class="leyenda-item"><svg width="24" height="14"><line x1="0" y1="7" x2="24" y2="7" stroke="black" stroke-width="2.5" stroke-dasharray="6,4"/></svg><span>Mejorado</span></div
+    html += '<div class="leyenda-item"><svg width="24" height="14"><line x1="0" y1="7" x2="24" y2="7" stroke="black" stroke-width="2.5" stroke-dasharray="6,4"/></svg><span>Mejorado</span></div>';
+    html += '<div class="leyenda-item"><svg width="24" height="14"><line x1="0" y1="7" x2="24" y2="7" stroke="black" stroke-width="2" stroke-dasharray="2,4"/></svg><span>Calzada natural</span></div>';
+    div.innerHTML = html;
+    return div;
+  };
+  return leyenda;
+}
+
+fetch('datos/rutas/rutas.geojson')
+  .then(r => r.json())
+  .then(data => {
+    const featuresValidas = (data.features || []).filter(rutaValida);
+    const dataFiltrada = { type: 'FeatureCollection', features: featuresValidas };
+
+    window.capaRutasHalo = L.geoJSON(dataFiltrada, { style: estiloRutaHalo, interactive: false });
+    window.capaRutas = L.geoJSON(dataFiltrada, { style: estiloRutaLinea, onEachFeature: onEachRuta });
+
+    const chk = document.getElementById('chk-rutas');
+    if (!chk) return;
+
+    chk.disabled = false;
+    chk.addEventListener('change', function (e) {
+      if (e.target.checked) {
+        window.capaRutasHalo.addTo(window.map);
+        window.capaRutas.addTo(window.map);
+        window.capaRutas.bringToFront();
+
+        if (!window.controlLeyendaRutas) window.controlLeyendaRutas = construirLeyendaRutas();
+        window.controlLeyendaRutas.addTo(window.map);
+      } else {
+        if (window.map.hasLayer(window.capaRutasHalo)) window.map.removeLayer(window.capaRutasHalo);
+        if (window.map.hasLayer(window.capaRutas)) window.map.removeLayer(window.capaRutas);
+        if (window.controlLeyendaRutas) {
+          window.map.removeControl(window.controlLeyendaRutas);
+          window.controlLeyendaRutas = null;
+        }
+      }
+    });
+  })
+  .catch(err => {
+    console.warn('Error cargando rutas:', err);
+    const chk = document.getElementById('chk-rutas');
+    if (chk) chk.disabled = true;
+  });
