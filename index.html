@@ -4,7 +4,6 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Mapa de Riesgo - Santa Fe</title>
-  <!-- Soluciona el error 404 del favicon -->
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
   <link rel="stylesheet" href="style.css">
@@ -12,38 +11,40 @@
 <body>
   <div id="map"></div>
 
-  <div id="panel">
-    <h4>Capas</h4>
+  <!-- Botón único que despliega/oculta el panel de capas -->
+  <button id="btn-capas" class="btn-capas" aria-expanded="false" aria-controls="panel">
+    <span class="btn-capas-icono">☰</span> Capas
+  </button>
+
+  <!-- Panel desplegable -->
+  <div id="panel" class="panel-oculto" role="dialog" aria-label="Selección de capas">
 
     <div class="capa-grupo">
       <div class="capa-titulo">Nivel de riesgo</div>
       <label>
-        <input type="checkbox" id="chk-distritos" checked>
+        <input type="radio" name="capa-exclusiva" id="chk-distritos" value="distritos" checked>
         Distritos (riesgo alto+crítico)
       </label>
     </div>
 
     <div class="capa-grupo">
       <div class="capa-titulo">Pronóstico de precipitación</div>
-      <label>
-        <input type="checkbox" id="chk-total"> Total 72 h
-      </label>
-      <label>
-        <input type="checkbox" id="chk-dia1"> Día 1 (0–24 h)
-      </label>
-      <label>
-        <input type="checkbox" id="chk-dia2"> Día 2 (24–48 h)
-      </label>
-      <label>
-        <input type="checkbox" id="chk-dia3"> Día 3 (48–72 h)
-      </label>
+      <label><input type="radio" name="capa-exclusiva" id="chk-total" value="total"> Total 72 h</label>
+      <label><input type="radio" name="capa-exclusiva" id="chk-dia1" value="dia1"> Día 1 (0–24 h)</label>
+      <label><input type="radio" name="capa-exclusiva" id="chk-dia2" value="dia2"> Día 2 (24–48 h)</label>
+      <label><input type="radio" name="capa-exclusiva" id="chk-dia3" value="dia3"> Día 3 (48–72 h)</label>
     </div>
 
     <div class="capa-grupo">
-      <div class="capa-titulo">Red vial</div>
-      <label>
-        <input type="checkbox" id="chk-rutas"> Rutas provinciales
-      </label>
+      <div class="capa-titulo">Precipitación acumulada (CHIRPS)</div>
+      <label><input type="radio" name="capa-exclusiva" id="chk-chirps-anual" value="chirps-anual"> Últimos 12 meses</label>
+      <label><input type="radio" name="capa-exclusiva" id="chk-chirps-mensual" value="chirps-mensual"> Último mes</label>
+    </div>
+
+    <!-- Rutas: checkbox independiente, se superpone con cualquier capa -->
+    <div class="capa-grupo">
+      <div class="capa-titulo">Red vial (superponible)</div>
+      <label><input type="checkbox" id="chk-rutas"> Rutas provinciales</label>
     </div>
 
     <div id="aviso" class="aviso">
@@ -57,10 +58,20 @@
       <div class="aviso-titulo">Pronóstico no disponible</div>
       <div class="aviso-linea">La capa no se ha podido cargar.</div>
     </div>
+
+    <div id="aviso-chirps" class="aviso" style="display:none;">
+      <div class="aviso-titulo">CHIRPS en vigor</div>
+      <div class="aviso-linea"><strong>Acumulado mensual:</strong> <span id="chirps-mensual-fecha">—</span></div>
+      <div class="aviso-linea"><strong>Acumulado 12 meses:</strong> <span id="chirps-anual-rango">—</span></div>
+    </div>
   </div>
+
+  <!-- Contenedor de leyendas (se llena dinámicamente) -->
+  <div id="leyendas-container"></div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="app.js"></script>
   <script src="rutas.js"></script>
+  <script src="chirps.js"></script>
 </body>
 </html>
