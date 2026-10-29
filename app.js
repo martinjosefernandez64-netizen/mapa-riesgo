@@ -307,4 +307,10 @@ fetch('datos/pronostico/metadata.json')
     panel.classList.add('panel-oculto');
     btnCapas.setAttribute('aria-expanded', 'false');
   });
+// ============================================================
+// 4. INICIALIZAR CHIRPS
+// ============================================================
+if (window.chirps && typeof window.chirps.init === 'function') {
+  window.chirps.init(window.map);
+}
 })();
