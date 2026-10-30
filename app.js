@@ -84,6 +84,7 @@ function activarCapaExclusiva(nombre) {
     }
     if (prev.tipo === 'chirps' && window.chirps) {
       window.chirps.desactivar(capaActiva);
+      window.chirps.ocultarLeyenda();
     }
   }
 
@@ -93,6 +94,7 @@ function activarCapaExclusiva(nombre) {
 
   // 2. Activar la nueva
   if (nueva.tipo === 'chirps') {
+    ocultarTodasLasLeyendas(); // <-- AGREGAR ESTA LÍNEA
     if (window.chirps) {
       window.chirps.activar(nombre);
       window.chirps.mostrarLeyenda(nombre === 'chirps-anual' ? 'anual' : 'mensual');
