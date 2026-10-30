@@ -1,58 +1,54 @@
 /* ============================================================
    CAPAS DE PRECIPITACIÓN ACUMULADA — CHIRPS v3
-   Dos capas exclusivas: anual (12 meses móviles) y mensual.
-   Se integran con la lógica de capas exclusivas de app.js.
    ============================================================ */
 
 (function () {
   'use strict';
 
-  // ---- Configuración ----
   const TILES_MENSUAL = 'tiles_chirps/mensual/{z}/{x}/{y}.png';
   const TILES_ANUAL   = 'tiles_chirps/anual/{z}/{x}/{y}.png';
-  const OPACITY = 0.7;
+  const OPACITY = 0.85; 
   const COLORES = ['#ffffcc', '#a1dab4', '#41b6c4', '#2c7fb8', '#253494'];
   const PNG_TRANSPARENTE = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
 
-  // CHIRPS tiene 0.05° de resolución (~5.5 km). Zoom 8 ya es más
-  // resolución de la que los datos tienen. El script Python genera
-  // teselas hasta zoom 8, así que maxNativeZoom debe ser 8.
   const MAX_NATIVE_ZOOM = 8;
-
-  // Bounds aproximados de Santa Fe (para no pedir teselas fuera de la provincia)
   const BOUNDS_SANTA_FE = [[-34.0, -63.5], [-27.5, -58.0]];
 
-  // ---- Estado ----
   let layerMensual = null;
   let layerAnual   = null;
   let metadata     = null;
   let mapRef       = null;
   let leyendaEl    = null;
+  let tipoPendiente = null;
 
   // ---------------------------------------------------------------
-  // Inicialización de capas
+  // Asegurar que las capas existan antes de usarlas
   // ---------------------------------------------------------------
-  function initCapas() {
-    layerMensual = L.tileLayer(TILES_MENSUAL, {
-      opacity: OPACITY,
-      attribution: 'CHIRPS v3.0 — CHC/UCSB',
-      maxNativeZoom: MAX_NATIVE_ZOOM,
-      maxZoom: 18,
-      bounds: BOUNDS_SANTA_FE,
-      errorTileUrl: PNG_TRANSPARENTE
-    });
-    layerAnual = L.tileLayer(TILES_ANUAL, {
-      opacity: OPACITY,
-      attribution: 'CHIRPS v3.0 — CHC/UCSB',
-      maxNativeZoom: MAX_NATIVE_ZOOM,
-      maxZoom: 18,
-      bounds: BOUNDS_SANTA_FE,
-      errorTileUrl: PNG_TRANSPARENTE
-    });
+  function asegurarCapas() {
+    if (!layerMensual) {
+      layerMensual = L.tileLayer(TILES_MENSUAL, {
+        opacity: OPACITY,
+        attribution: 'CHIRPS v3.0 — CHC/UCSB',
+        maxNativeZoom: MAX_NATIVE_ZOOM,
+        maxZoom: 18,
+        bounds: BOUNDS_SANTA_FE,
+        errorTileUrl: PNG_TRANSPARENTE
+      });
+    }
+    if (!layerAnual) {
+      layerAnual = L.tileLayer(TILES_ANUAL, {
+        opacity: OPACITY,
+        attribution: 'CHIRPS v3.0 — CHC/UCSB',
+        maxNativeZoom: MAX_NATIVE_ZOOM,
+        maxZoom: 18,
+        bounds: BOUNDS_SANTA_FE,
+        errorTileUrl: PNG_TRANSPARENTE
+      });
+    }
   }
 
   // ---------------------------------------------------------------
-  // Metadata (cuantiles y fechas)
+  // Metadata
   // ---------------------------------------------------------------
   function cargarMetadata() {
     fetch('datos/chirps_metadata.json')
@@ -62,7 +58,12 @@
       })
       .then(function (data) {
         metadata = data;
-        // Rellenar el aviso CHIRPS si existe en el panel
+        // Si había una leyenda pendiente, mostrarla ahora
+        if (tipoPendiente) {
+          mostrarLeyenda(tipoPendiente);
+          tipoPendiente = null;
+        }
+        // Rellenar aviso
         const aviso = document.getElementById('aviso-chirps');
         if (aviso) {
           const elM = document.getElementById('chirps-mensual-fecha');
@@ -82,11 +83,11 @@
   }
 
   // ---------------------------------------------------------------
-  // Leyenda dinámica (5 cuantiles)
+  // Leyenda dinámica
   // ---------------------------------------------------------------
   function construirLeyendaHTML(tipo) {
     if (!metadata || !metadata[tipo]) return null;
-    const cuantiles = metadata[tipo].cuantiles; // [q20, q40, q60, q80]
+    const cuantiles = metadata[tipo].cuantiles;
     const etiquetas = [
       '0 – ' + Math.round(cuantiles[0]) + ' mm',
       Math.round(cuantiles[0]) + ' – ' + Math.round(cuantiles[1]) + ' mm',
@@ -113,10 +114,28 @@
     return div;
   }
 
+  function getContenedorLeyendas() {
+    let cont = document.querySelector('.contenedor-leyendas');
+    if (!cont && mapRef) {
+      const control = L.control({ position: 'topleft' });
+      control.onAdd = function () {
+        return L.DomUtil.create('div', 'contenedor-leyendas');
+      };
+      control.addTo(mapRef);
+      cont = document.querySelector('.contenedor-leyendas');
+    }
+    return cont;
+  }
+
   function mostrarLeyenda(tipo) {
+    if (!metadata) {
+      tipoPendiente = tipo;
+      return;
+    }
     ocultarLeyenda();
-    const contenedor = document.querySelector('.contenedor-leyendas');
+    const contenedor = getContenedorLeyendas();
     if (!contenedor) return;
+    
     const el = construirLeyendaHTML(tipo);
     if (!el) return;
     leyendaEl = el;
@@ -132,39 +151,35 @@
   }
 
   // ---------------------------------------------------------------
-  // API pública usada por app.js
+  // API pública
   // ---------------------------------------------------------------
   window.chirps = {
     init: function (map) {
       mapRef = map;
-      initCapas();
+      asegurarCapas();
       cargarMetadata();
     },
 
     activar: function (nombre) {
       if (!mapRef) return;
-      if (nombre === 'chirps-anual' && layerAnual && !mapRef.hasLayer(layerAnual)) {
+      asegurarCapas();
+      if (nombre === 'chirps-anual' && !mapRef.hasLayer(layerAnual)) {
         layerAnual.addTo(mapRef);
-      } else if (nombre === 'chirps-mensual' && layerMensual && !mapRef.hasLayer(layerMensual)) {
+      } else if (nombre === 'chirps-mensual' && !mapRef.hasLayer(layerMensual)) {
         layerMensual.addTo(mapRef);
       }
     },
 
     desactivar: function (nombre) {
       if (!mapRef) return;
-      if (nombre === 'chirps-anual' && layerAnual && mapRef.hasLayer(layerAnual)) {
+      if (nombre === 'chirps-anual' && mapRef.hasLayer(layerAnual)) {
         mapRef.removeLayer(layerAnual);
-      } else if (nombre === 'chirps-mensual' && layerMensual && mapRef.hasLayer(layerMensual)) {
+      } else if (nombre === 'chirps-mensual' && mapRef.hasLayer(layerMensual)) {
         mapRef.removeLayer(layerMensual);
       }
     },
 
-    mostrarLeyenda: function (tipo) {
-      mostrarLeyenda(tipo);
-    },
-
-    ocultarLeyenda: function () {
-      ocultarLeyenda();
-    }
+    mostrarLeyenda: function (tipo) { mostrarLeyenda(tipo); },
+    ocultarLeyenda: function () { ocultarLeyenda(); }
   };
 })();
