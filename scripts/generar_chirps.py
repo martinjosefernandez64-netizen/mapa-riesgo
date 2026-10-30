@@ -310,6 +310,7 @@ def generar_capa_chirps(tif_recortado, cuantiles, output_dir, tmp_dir, nombre):
         "-p", "mercator",
         "--xyz",
         "-r", "bilinear",
+        "--quiet",
         png_color,
         output_dir,
     ], check=True)
