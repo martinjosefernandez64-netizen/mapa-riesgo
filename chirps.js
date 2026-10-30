@@ -58,12 +58,10 @@
       })
       .then(function (data) {
         metadata = data;
-        // Si había una leyenda pendiente, mostrarla ahora
         if (tipoPendiente) {
           mostrarLeyenda(tipoPendiente);
           tipoPendiente = null;
         }
-        // Rellenar aviso
         const aviso = document.getElementById('aviso-chirps');
         if (aviso) {
           const elM = document.getElementById('chirps-mensual-fecha');
@@ -183,3 +181,9 @@
     ocultarLeyenda: function () { ocultarLeyenda(); }
   };
 })();
+
+// Auto-inicialización: si el mapa ya existe, inicializar CHIRPS automáticamente
+if (window.map && window.chirps && !window.chirps._iniciado) {
+  window.chirps.init(window.map);
+  window.chirps._iniciado = true;
+}
