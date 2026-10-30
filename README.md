@@ -72,3 +72,4 @@ GDAL / Rasterio / RioXarray: Procesamiento de datos geoespaciales y generación 
 GitHub Actions: Automatización de pipelines de datos.
 CHIRPS (Climate Hazards Center): Fuente de datos de precipitación histórica.
 WRF-SMN (Servicio Meteorológico Nacional): Fuente de datos de pronóstico.
+ 
