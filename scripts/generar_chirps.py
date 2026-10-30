@@ -10,14 +10,17 @@ Genera 2 capas:
 Flujo:
 1. Descarga los GeoTIFF mensuales de CHIRPS v3.0 (bucket público de CHC/UCSB).
    Si CHIRPS_CACHE_DIR está definido, cachea los crudos entre ejecuciones.
-2. Recorta cada mes al polígono de Santa Fe con rioxarray.clip (mismo
-   criterio que generar_pronostico.py: fuera del polígono → -9999).
+2. Recorta cada mes al polígono de Santa Fe en DOS pasos para NO cargar
+   el ráster global en memoria:
+   a. rasterio.mask(crop=True) → recorta al bbox de Santa Fe (~5000 píxeles).
+   b. rioxarray.clip(drop=True) → enmascara lo que está fuera del polígono
+      y ajusta la extensión al bbox.
    Los recortes también se cachean si CHIRPS_CACHE_DIR está definido.
 3. Suma los 12 meses para el acumulado anual.
 4. Calcula cuantiles (20/40/60/80) solo sobre píxeles válidos dentro
    del polígono, para clasificar en 5 clases.
 5. Genera un PNG coloreado con gdaldem color-relief -alpha (nodata
-   transparente) y luego las teselas XYZ con gdal2tiles.
+   transparente) y luego las teselas XYZ con gdal2tiles --quiet.
 6. Escribe datos/chirps_metadata.json con los cuantiles y fechas.
 
 Fuente de datos:
@@ -39,6 +42,7 @@ import numpy as np
 import xarray as xr
 import rioxarray  # noqa: F401
 import rasterio
+import rasterio.mask
 import geopandas as gpd
 import requests
 from dateutil.relativedelta import relativedelta
@@ -164,6 +168,12 @@ def recortar_a_santa_fe(tif_path, output_path, gdf):
     """
     Recorta el GeoTIFF de CHIRPS al polígono de Santa Fe.
 
+    Estrategia en dos pasos para NO cargar el ráster global en memoria:
+    1. rasterio.mask con crop=True → recorta al bbox de Santa Fe
+       (reduce de ~16M píxeles a ~5000 píxeles antes de descomprimir todo).
+    2. rioxarray.clip con drop=True → enmascara lo que está fuera del
+       polígono y ajusta la extensión al bbox.
+
     - Píxeles fuera del polígono → -9999 (nodata).
     - Declara nodata=-9999 en el GeoTIFF de salida.
     - Deja el archivo listo para gdaldem color-relief -alpha.
@@ -175,27 +185,56 @@ def recortar_a_santa_fe(tif_path, output_path, gdf):
         log.info("  Recorte ya en caché: %s", os.path.basename(output_path))
         return output_path
 
-    da = xr.open_dataarray(tif_path, engine="rasterio")
+    # Paso 1: recorte barato al bbox con rasterio.mask
+    geom_bbox = [gdf.geometry.union_all()]
+    with rasterio.open(tif_path) as src:
+        out_image, out_transform = rasterio.mask.mask(
+            src, geom_bbox, crop=True, nodata=NODATA_VALOR, all_touched=False
+        )
+        out_meta = src.meta.copy()
 
-    # Normalizar dimensiones: quitar eje 'band' si existe
+    # Convertir -9999 a NaN para que rioxarray.clip lo trate como nodata
+    out_image = out_image.astype(np.float32)
+    out_image[out_image == NODATA_VALOR] = np.nan
+
+    out_meta.update({
+        "driver": "GTiff",
+        "height": out_image.shape[1],
+        "width": out_image.shape[2],
+        "transform": out_transform,
+        "nodata": np.nan,
+        "count": 1,
+    })
+
+    # Escribir el recorte intermedio (pequeño, ~5000 píxeles)
+    tif_intermedio = output_path.replace(".tif", "_bbox.tif")
+    with rasterio.open(tif_intermedio, "w", **out_meta) as dest:
+        dest.write(out_image)
+
+    # Paso 2: enmascarar por polígono con rioxarray sobre el array pequeño
+    da = xr.open_dataarray(tif_intermedio, engine="rasterio")
     if "band" in da.dims:
         da = da.isel(band=0, drop=True)
-
-    # Asegurar CRS
     if da.rio.crs is None:
         da = da.rio.write_crs("EPSG:4326")
 
-    # Recorte real por polígono (NO solo bbox)
+    # drop=True ajusta la extensión al bbox del polígono
     da_rec = da.rio.clip(
-        gdf.geometry.values, gdf.crs, drop=False, invert=False
+        gdf.geometry.values, gdf.crs, drop=True, invert=False
     )
-
-    # Fuera del polígono queda NaN → rellenar con -9999
     da_rec = da_rec.fillna(NODATA_VALOR)
     da_rec = da_rec.rio.write_nodata(NODATA_VALOR)
-
     da_rec.rio.to_raster(output_path, nodata=NODATA_VALOR)
-    log.info("  Recortado (por polígono): %s", os.path.basename(output_path))
+
+    # Limpiar el intermedio
+    try:
+        da.close()
+    except Exception:
+        pass
+    if os.path.exists(tif_intermedio):
+        os.remove(tif_intermedio)
+
+    log.info("  Recortado (bbox + polígono): %s", os.path.basename(output_path))
     return output_path
 
 
@@ -271,8 +310,8 @@ def generar_capa_chirps(tif_recortado, cuantiles, output_dir, tmp_dir, nombre):
     1. Tabla de paleta: -9999 → (0,0,0,0) + 5 colores en los cortes.
     2. gdaldem color-relief -alpha → PNG con transparencia.
     3. gdal_translate a PNG (más rápido de teselar que GeoTIFF).
-    4. gdal2tiles.py sobre el PNG, SIN --processes (evita el cuelgue
-       de gdal2tiles en GDAL 3.8.x con --xyz) y con ZOOM_MAX=8.
+    4. gdal2tiles.py --quiet sobre el PNG, SIN --processes (evita el
+       cuelgue de gdal2tiles en GDAL 3.8.x con --xyz) y con ZOOM_MAX=8.
     """
     # 1. Construir tabla de paleta
     # gdaldem interpreta cada fila como límite inferior del intervalo.
@@ -292,15 +331,15 @@ def generar_capa_chirps(tif_recortado, cuantiles, output_dir, tmp_dir, nombre):
     subprocess.run([
         "gdaldem", "color-relief",
         tif_recortado, tabla, tif_color, "-alpha",
-    ], check=True)
+    ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     # 3. Convertir a PNG (más rápido para gdal2tiles que leer GeoTIFF)
     png_color = os.path.join(tmp_dir, f"{nombre}_color.png")
     subprocess.run([
         "gdal_translate", "-of", "PNG", tif_color, png_color,
-    ], check=True)
+    ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-    # 4. Teselas (sin --processes, zoom máximo 8)
+    # 4. Teselas (sin --processes, zoom máximo 8, --quiet)
     if os.path.exists(output_dir):
         shutil.rmtree(output_dir)
     subprocess.run([
