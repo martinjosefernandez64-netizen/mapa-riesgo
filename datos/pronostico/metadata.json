@@ -1,6 +1,6 @@
 {
-  "fecha_emision": "2026-11-25T01:58:24.771404+00:00",
-  "corrida_wrf": "2026-11-24 12 UTC",
+  "fecha_emision": "2026-11-25T17:43:10.427469+00:00",
+  "corrida_wrf": "2026-11-25 12 UTC",
   "variable": "Precipitación acumulada",
   "unidad": "mm",
   "bounds": [
@@ -18,22 +18,22 @@
   "capas": {
     "total": {
       "label": "Total 72h",
-      "max_mm": 0.23167388141155243
+      "max_mm": 1.2657661437988281
     },
     "dia1": {
       "label": "Día 1 (0-24h)",
-      "max_mm": 0.0
+      "max_mm": 0.11427762359380722
     },
     "dia2": {
       "label": "Día 2 (24-48h)",
-      "max_mm": 0.0
+      "max_mm": 1.2657661437988281
     },
     "dia3": {
       "label": "Día 3 (48-72h)",
-      "max_mm": 0.23167388141155243
+      "max_mm": 0.0
     }
   },
-  "max_mm": 0.23167388141155243,
+  "max_mm": 1.2657661437988281,
   "escala": [
     {
       "min": 0,
